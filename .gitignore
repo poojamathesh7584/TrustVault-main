@@ -1,0 +1,14 @@
+node_modules/
+client/dist/
+client-classic/dist/
+server/.env
+server/storage/
+server/dev-mail/
+server/.ocr-cache/
+*.log
+
+# laptop demo accounts (passwords and Authenticator keys)
+DEMO-ACCOUNTS.md
+DEMO-ACCOUNTS.pdf
+demo-accounts.json
+.mongodb/
