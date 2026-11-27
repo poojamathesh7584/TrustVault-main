@@ -320,34 +320,44 @@ export function PinForm({ label = 'Enter your 6-digit vault PIN', submitText = '
 }
 
 // Asks for the PIN, then shows the watermarked file. Right-click and the PDF toolbar are disabled.
-export function DocViewer({ doc, onClose }) {
-  const { vaultUnlocked, setVault } = useAuth();
+export function DocViewer({ doc, viewUrl, onClose }) {
   const [url, setUrl] = useState('');
   const [isPdf, setIsPdf] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => () => url && URL.revokeObjectURL(url), [url]);
-  const open = async ({ pin }) => {
-    const docId = doc.id || doc._id;
-    const res = await api(`/documents/${docId}/view`, { method: 'POST', body: { pin }, raw: true });
-    const ct = res.headers?.get('content-type') || '';
-    setIsPdf(ct.includes('application/pdf'));
-    setUrl(URL.createObjectURL(await res.blob()));
-  };
-  // vault already unlocked this session: open straight away, no PIN
   useEffect(() => {
-    if (vaultUnlocked) open({}).catch((e) => { if (e.code === 'VAULT_LOCKED') setVault(false); else setError(e.message); });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    let active = true;
+    const docId = doc.id || doc._id;
+    const endpoint = viewUrl || `/documents/${docId}/view`;
+    api(endpoint, { method: 'POST', raw: true })
+      .then(async (res) => {
+        if (!active) return;
+        const ct = res.headers?.get('content-type') || '';
+        setIsPdf(ct.includes('application/pdf'));
+        setUrl(URL.createObjectURL(await res.blob()));
+      })
+      .catch((e) => {
+        if (active) setError(e.message || 'Could not load document.');
+      });
+    return () => { active = false; };
+  }, [doc, viewUrl]);
+
   return (
     <Modal title={doc.title} onClose={onClose} wide={Boolean(url)}>
-      {url ? (
-        <FileFrame url={url} pdf={isPdf} title={doc.title}>
-          This copy is watermarked with your email. Every view is recorded in the activity log.
-        </FileFrame>
-      ) : vaultUnlocked ? (
-        error ? <ErrorText>{error}</ErrorText> : <Spinner>Opening securely…</Spinner>
-      ) : (
-        <PinForm label="Enter your 6-digit vault PIN to view this document" onSubmit={open} />
-      )}
+      <div className="grid gap-4">
+        <div className="grid grid-cols-2 gap-2 rounded-xl border border-border bg-muted/50 p-3 text-xs sm:grid-cols-4">
+          <div><span className="block text-muted-foreground">Type</span><b className="font-semibold">{TYPE_LABELS[doc.type] || doc.type}</b></div>
+          <div><span className="block text-muted-foreground">Number</span><b className="font-mono">{doc.numberMasked || '-'}</b></div>
+          <div><span className="block text-muted-foreground">Status</span><b className="uppercase">{doc.status}</b></div>
+          <div><span className="block text-muted-foreground">Score</span><b className="font-mono">{doc.autoCheck?.score ?? '-'}%</b></div>
+          {doc.sha256 && <div className="col-span-full font-mono text-[11px] break-all text-muted-foreground">SHA-256: {doc.sha256}</div>}
+        </div>
+        {url ? (
+          <FileFrame url={url} pdf={isPdf} title={doc.title}>
+            This copy is watermarked with your email. Every view is recorded in the activity log.
+          </FileFrame>
+        ) : error ? <ErrorText>{error}</ErrorText> : <Spinner>Opening watermarked document…</Spinner>}
+      </div>
     </Modal>
   );
 }

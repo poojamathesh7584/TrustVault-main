@@ -7,7 +7,19 @@ import { fmtDay, TYPE_LABELS } from '@/lib/api';
 import { sfx } from '@/lib/sound';
 import { cn } from '@/lib/utils';
 
-const ISSUER = { pan: 'Income Tax Department', aadhaar: 'Aadhaar · UIDAI', license: 'Driving Licence', class10: 'School Board · 10th', class12: 'School Board · 12th', marksheet: 'Academic Record', certificate: 'Certificate', other: 'Personal Document' };
+const ISSUER = {
+  pan: 'Income Tax Department',
+  aadhaar: 'Aadhaar · UIDAI',
+  license: 'Driving Licence',
+  class10: 'School Board · 10th',
+  class12: 'School Board · 12th',
+  marksheet: 'Semester Marksheet',
+  degree: 'Degree Certificate',
+  certificate: 'College Certificate',
+  income: 'Income Certificate',
+  community: 'Community Certificate',
+  other: 'Academic Document'
+};
 const STATUS = { verified: [ShieldCheck, 'Verified'], pending: [Clock, 'Checking'], rejected: [XCircle, 'Not verified'], stored: [FolderLock, 'Stored'] };
 
 function Back({ doc }) {

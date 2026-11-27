@@ -9,6 +9,7 @@
     "server:dev": "node --watch-path=server/src server/src/index.js",
     "client": "npm run dev --prefix client",
     "seed": "node server/scripts/seed.js",
+    "db:inspect": "node server/scripts/inspectDb.js",
     "build": "npm run build --prefix client",
     "preview": "npm run preview --prefix client"
   },

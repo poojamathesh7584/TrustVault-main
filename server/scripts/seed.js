@@ -22,12 +22,16 @@ async function seed() {
     await Audit.deleteMany({});
     console.log('[TrustVault Seeder] Cleared existing collections.');
 
-    // Load demo-accounts.json
-    const demoAccountsPath = path.join(__dirname, '..', '..', 'demo-accounts.json');
-    let accountsData = { password: 'TrustVault@2026', pin: '482915', accounts: [] };
-    if (fs.existsSync(demoAccountsPath)) {
-      accountsData = JSON.parse(fs.readFileSync(demoAccountsPath, 'utf8'));
-    }
+    // Default seed accounts (no external secrets file required)
+    const accountsData = {
+      password: process.env.SEED_DEFAULT_PASSWORD || 'TrustVault@2026',
+      pin: '482915',
+      accounts: [
+        { name: 'Pooja Matheshwaran', email: 'poojamatheshwaran6363@gmail.com', role: 'admin' },
+        { name: 'Dr. Priya Raman', email: 'priya.raman@trustvault.demo', role: 'verifier' },
+        { name: 'Rahul Sharma', email: 'rahul.23mx301@trustvault.demo', role: 'student', roll: '23MX301' }
+      ]
+    };
 
     const hashedPassword = await hashPassword(accountsData.password || 'TrustVault@2026');
 

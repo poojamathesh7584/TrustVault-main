@@ -44,13 +44,13 @@ export default function Landing() {
 
           <div className="flex flex-wrap justify-center gap-3">
             <Button asChild size="lg" className="h-11 px-6 font-semibold">
-              <Link to="/login">
-                Get Started <ArrowRight className="ml-2 size-4" />
+              <Link to="/register">
+                Student Sign Up <ArrowRight className="ml-2 size-4" />
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline" className="h-11 px-6 font-semibold">
               <Link to="/login">
-                ⚡ 1-Click Demo Logins
+                Sign In (Student / Faculty / Admin)
               </Link>
             </Button>
           </div>

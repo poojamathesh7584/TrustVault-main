@@ -44,7 +44,7 @@ function validateVerhoeff(numStr) {
 }
 
 function validatePAN(panStr) {
-  const clean = String(panStr || '').toUpperCase().trim();
+  const clean = String(panStr || '').toUpperCase().replace(/[\s-]/g, '');
   if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(clean)) return false;
   // 4th character must be a valid Income Tax entity code
   const validEntities = ['P', 'C', 'H', 'F', 'A', 'T', 'B', 'L', 'J', 'G'];
@@ -269,7 +269,7 @@ async function extractDocumentText(fileBuffer, fileCheck) {
   if (fileCheck.isPdf) {
     const raw = fileBuffer.toString('latin1');
     const chunks = [];
-    // Extract parenthesized PDF text literals (...) and uncompressed readable lines
+    // Extract parenthesized PDF text literals (...) from uncompressed PDF text objects
     const textLiteralRegex = /\(([^()]{2,200})\)/g;
     let tm;
     while ((tm = textLiteralRegex.exec(raw)) !== null) {
@@ -280,27 +280,21 @@ async function extractDocumentText(fileBuffer, fileCheck) {
     while ((m = streamRegex.exec(raw)) !== null) {
       try {
         const inflated = zlib.inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1');
+        // Extract text literals inside inflated PDF content streams, plus readable ASCII
+        while ((tm = textLiteralRegex.exec(inflated)) !== null) {
+          chunks.push(tm[1]);
+        }
         chunks.push(inflated.replace(/[^\x20-\x7E\r\n]/g, ' '));
       } catch {
         // Binary stream (e.g., DCTDecode JPEG image)
       }
     }
-    // Also include plain ASCII lines from raw PDF for simple/uncompressed PDFs (excluding PDF structural headers)
-    const plainLines = raw
-      .replace(/%PDF-[\d.]+/g, ' ')
-      .replace(/\/[A-Za-z0-9]+/g, ' ')
-      .replace(/\b(obj|endobj|stream|endstream|xref|trailer|startxref)\b/g, ' ')
-      .replace(/[^\x20-\x7E\r\n]/g, ' ');
-    chunks.push(plainLines);
 
     const pdfText = chunks.join(' ').replace(/\s+/g, ' ').trim();
-    if (pdfText.replace(/[^a-z0-9]/gi, '').length >= 25) {
-      return pdfText;
-    }
-
-    // Image-only / scanned PDF: extract embedded JPEG images and run Tesseract OCR
     const embeddedJpegs = extractJpegsFromPdf(fileBuffer);
-    if (embeddedJpegs.length > 0) {
+
+    // Run OCR on embedded JPEGs for image-only / scanned PDFs (or when extracted PDF text is sparse)
+    if (embeddedJpegs.length > 0 && pdfText.replace(/[^a-z0-9]/gi, '').length < 80) {
       const ocrResults = [];
       for (const jpg of embeddedJpegs.slice(0, 2)) {
         const t = await runTesseractOcr(jpg);
@@ -310,7 +304,21 @@ async function extractDocumentText(fileBuffer, fileCheck) {
         return `${pdfText} ${ocrResults.join(' ')}`.trim();
       }
     }
-    return pdfText;
+
+    if (pdfText.replace(/[^a-z0-9]/gi, '').length >= 15) {
+      return pdfText;
+    }
+
+    // Fallback for simple uncompressed PDFs without parenthesized literals (excluding binary streams & PDF headers)
+    const plainLines = raw
+      .replace(/stream[\r\n]+[\s\S]*?[\r\n]+endstream/g, ' ')
+      .replace(/%PDF-[\d.]+/g, ' ')
+      .replace(/\/[A-Za-z0-9]+/g, ' ')
+      .replace(/\b(obj|endobj|stream|endstream|xref|trailer|startxref)\b/g, ' ')
+      .replace(/[^\x20-\x7E\r\n]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return `${pdfText} ${plainLines}`.trim();
   }
 
   if (fileCheck.isImage && fileBuffer.length >= 2048) {
@@ -328,7 +336,8 @@ async function extractDocumentText(fileBuffer, fileCheck) {
 async function verifyDocumentUpload({ type, number, fileBuffer, originalName, mime, user, isDuplicate = false }) {
   const checks = [];
   const cleanType = (type || 'other').toLowerCase();
-  const cleanNum = String(number || '').toUpperCase().trim();
+  const rawNum = String(number || '').toUpperCase().trim();
+  const cleanNum = cleanType === 'pan' ? rawNum.replace(/[\s-]/g, '') : rawNum;
   const fileName = String(originalName || '').toLowerCase();
   const fileCheck = inspectFileBuffer(fileBuffer, originalName, mime);
   const fileLen = fileBuffer ? fileBuffer.length : 1024;
@@ -405,10 +414,14 @@ async function verifyDocumentUpload({ type, number, fileBuffer, originalName, mi
   let keywordDetail = '';
   const typeMatch = matchesDocType(cleanType, fileName, bufferStr);
   const expectedOcrKws = OCR_EXPECTED_KEYWORDS[cleanType];
-  const ocrMatched = !expectedOcrKws || (hasReadableText && expectedOcrKws.some((k) => extractedLower.includes(k)));
+  const ocrMatched = !expectedOcrKws || (hasReadableText && expectedOcrKws.some((k) => {
+    if (extractedLower.includes(k)) return true;
+    const alnumKw = k.replace(/[^a-z0-9]/gi, '');
+    return alnumKw.length >= 6 && fuzzyOcrMatch(extractedAlnum, alnumKw, 0.78);
+  }));
 
   if (cleanType === 'pan') {
-    if (formatOk && fileCheck.valid && !typeMatch.mismatched && ocrMatched) {
+    if (fileCheck.valid && !typeMatch.mismatched && ocrMatched) {
       hasKeywords = true;
       keywordDetail = 'Official Income Tax Department header and PAN credentials verified in document text.';
     } else if (typeMatch.mismatched) {
@@ -427,7 +440,7 @@ async function verifyDocumentUpload({ type, number, fileBuffer, originalName, mi
       detail: keywordDetail
     });
   } else if (cleanType === 'aadhaar') {
-    if (formatOk && fileCheck.valid && !typeMatch.mismatched && ocrMatched) {
+    if (fileCheck.valid && !typeMatch.mismatched && ocrMatched) {
       hasKeywords = true;
       keywordDetail = 'Official Unique Identification Authority of India (UIDAI) header verified in document text.';
     } else if (typeMatch.mismatched) {

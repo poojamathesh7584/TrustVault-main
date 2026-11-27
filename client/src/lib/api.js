@@ -676,10 +676,11 @@ function clientValidateVerhoeff(numStr) {
 }
 
 function clientValidatePAN(panStr) {
-  const clean = String(panStr || '').toUpperCase().trim();
+  const clean = String(panStr || '').toUpperCase().replace(/[\s-]/g, '');
   if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(clean)) return false;
   const validEntities = ['P', 'C', 'H', 'F', 'A', 'T', 'B', 'L', 'J', 'G'];
-  return validEntities.includes(clean[3]);
+  if (!validEntities.includes(clean[3])) return false;
+  return clean.slice(5, 9) !== '0000';
 }
 
 function clientValidateDL(dlStr) {
@@ -706,12 +707,6 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
       credentials: 'include',
     };
     const activeUser = getActiveUser();
-    if (activeUser?.id || activeUser?._id || activeUser?.email) {
-      fetchOptions.headers['x-user-id'] = activeUser._id || activeUser.id || activeUser.email;
-    }
-    if (activeUser?.name) {
-      fetchOptions.headers['x-user-name'] = activeUser.name;
-    }
     const token = loadStore('token', null);
     if (token) {
       fetchOptions.headers['Authorization'] = `Bearer ${token}`;
@@ -749,17 +744,8 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
         setActiveUser(null);
         saveStore('token', null);
       }
-      if (urlPath === '/auth/activity' && (!Array.isArray(data) || data.length === 0)) {
-        const key = getUserAuditKey();
-        let audit = loadStore(key, null);
-        const isRahul = activeUser?.email && activeUser.email.includes('rahul');
-        const hasStaleRahul = !isRahul && Array.isArray(audit) && audit.some(a => a.user?.name === 'Rahul Sharma' || a.detail?.includes('Rahul Sharma'));
-        if (!audit || !Array.isArray(audit) || audit.length === 0 || hasStaleRahul) {
-          audit = getUserInitialAudit(activeUser);
-          saveStore(key, audit);
-          saveStore('audit', audit);
-        }
-        return audit;
+      if (urlPath === '/auth/activity') {
+        return Array.isArray(data) ? data : [];
       }
       if (urlPath === '/documents' && m === 'GET' && Array.isArray(data)) {
         saveStore(getUserDocsKey(), data);
@@ -806,9 +792,15 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
       return data;
     }
 
-    // If backend returned a 4xx validation error in JSON (except 401 token errors, so mock fallback can smoothly handle it), throw that message
+    // If backend returned a JSON error (4xx or 5xx, except 401 on /auth/me), throw that message
     const contentType = response.headers.get('content-type') || '';
-    if (urlPath !== '/auth/me' && response.status !== 401 && response.status < 500 && contentType.includes('application/json')) {
+    if (response.status === 401 && urlPath !== '/auth/login' && urlPath !== '/auth/otp/verify' && urlPath !== '/auth/login/totp') {
+      if (loadStore('token', null)) {
+        saveStore('token', null);
+        window.dispatchEvent(new Event('session-expired'));
+      }
+    }
+    if (urlPath !== '/auth/me' && response.status !== 401 && contentType.includes('application/json')) {
       const errData = await response.json().catch(() => ({}));
       if (errData.error || errData.message) {
         const err = new Error(errData.error || errData.message);
@@ -817,7 +809,7 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
       }
     }
   } catch (err) {
-    if (err.status && err.status < 500 && err.status !== 401) {
+    if (err.status && err.status !== 401) {
       throw err;
     }
   }
@@ -1218,10 +1210,11 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
           formatDetail = 'UIDAI 12-digit Aadhaar Verhoeff checksum verified.';
         }
       } else if (type === 'pan') {
-        if (!cleanNum) {
+        const normalizedPan = cleanNum.replace(/[\s-]/g, '');
+        if (!normalizedPan) {
           formatOk = false;
           formatDetail = 'PAN number required for algorithmic validation.';
-        } else if (!clientValidatePAN(cleanNum) || cleanNum.slice(5, 9) === '0000') {
+        } else if (!clientValidatePAN(normalizedPan)) {
           formatOk = false;
           formatDetail = 'Invalid PAN format or entity code. Must be 5 letters (4th in P/C/H/F/A/T/B/L/J/G), 4 non-zero digits, 1 letter (e.g. ABCPE1234F).';
         } else {
@@ -1260,7 +1253,7 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
       let keywordDetail = '';
       if (type === 'pan') {
         const isMismatched = fileName.includes('aadhaar') || fileName.includes('uidai') || fileName.includes('license') || fileName.includes('marksheet') || fileName.includes('10th') || fileName.includes('12th');
-        if (formatOk && validFileType && typeHasKeyword && !isMismatched) {
+        if (validFileType && typeHasKeyword && !isMismatched) {
           hasKeywords = true;
           keywordDetail = 'Official Income Tax Department header and PAN credentials verified.';
         } else if (isMismatched) {
@@ -1277,7 +1270,7 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
         });
       } else if (type === 'aadhaar') {
         const isMismatched = fileName.includes('pan_card') || fileName.includes('pancard') || fileName.includes('license') || fileName.includes('marksheet') || fileName.includes('10th') || fileName.includes('12th');
-        if (formatOk && validFileType && typeHasKeyword && !isMismatched) {
+        if (validFileType && typeHasKeyword && !isMismatched) {
           hasKeywords = true;
           keywordDetail = 'Official Unique Identification Authority of India (UIDAI) credential structure verified.';
         } else if (isMismatched) {
@@ -1499,12 +1492,13 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
     const sizes = docs.slice(0, 3).map((d) => `${d.title} (${Math.round((d.size || 25000) / 1024)} KB)`);
 
     try {
-      const directRes = await fetch('http://localhost:5000/api/documents/export', {
+      const exportToken = loadStore('token', null);
+      const directRes = await fetch('/api/documents/export', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-id': recipientEmail,
-          'x-user-name': recipientName
+          ...(exportToken ? { 'Authorization': `Bearer ${exportToken}` } : {})
         },
         body: JSON.stringify({
           ids: body?.ids,
@@ -2037,18 +2031,21 @@ export const cleanDetail = (s = '') => s.replace(' | ', ' · ').replace(/^(.+?) 
 export const SECTIONS = [
   { title: 'Identity documents', types: ['pan', 'aadhaar', 'license'], note: 'Checked automatically with checksums & format rules.' },
   { title: 'School marksheets', types: ['class10', 'class12'], note: 'Stored safely in encrypted vault storage.' },
-  { title: 'College documents', types: ['marksheet', 'certificate'], note: 'Checked automatically for academic validation.' },
+  { title: 'College documents', types: ['marksheet', 'degree', 'certificate', 'income', 'community'], note: 'College academic, scholarship & verification documents.' },
   { title: 'Other documents', types: ['other'], note: 'Stored securely and fingerprinted for authenticity.' },
 ];
 
 export const NUMBER_FIELD = {
-  pan: { label: 'PAN number', placeholder: 'ABCDE1234F', required: true },
+  pan: { label: 'PAN number', placeholder: 'ABCPE1234F', required: true },
   aadhaar: { label: 'Aadhaar number', placeholder: '1234 5678 9012', required: true },
   license: { label: 'Driving licence number', placeholder: 'MH12 20110012345', required: true },
   class10: { label: 'Register number (optional)', placeholder: '' },
   class12: { label: 'Register number (optional)', placeholder: '' },
   marksheet: { label: 'Roll / register number (optional)', placeholder: '' },
+  degree: { label: 'Degree / Convocation number (optional)', placeholder: '' },
   certificate: { label: 'Certificate number (optional)', placeholder: '' },
+  income: { label: 'Certificate number (optional)', placeholder: '' },
+  community: { label: 'Certificate number (optional)', placeholder: '' },
   other: { label: 'Reference number (optional)', placeholder: '' },
 };
 

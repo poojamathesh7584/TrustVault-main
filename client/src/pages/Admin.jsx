@@ -81,20 +81,44 @@ function Users() {
   const [newEmail, setNewEmail] = useState('');
   const [newIdCode, setNewIdCode] = useState('');
   const [newDept, setNewDept] = useState('Department of Computer Applications');
-  const [newPassword, setNewPassword] = useState('TrustVault@2026');
+  const [newPassword, setNewPassword] = useState('');
   const [addError, setAddError] = useState('');
   const [adding, setAdding] = useState(false);
 
   const [pwdUser, setPwdUser] = useState(null);
-  const [pwdValue, setPwdValue] = useState('TrustVault@2026');
+  const [pwdValue, setPwdValue] = useState('');
+  const [editUser, setEditUser] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editRoll, setEditRoll] = useState('');
+  const [editDept, setEditDept] = useState('');
 
   const act = async (fn, done) => { try { await fn(); reload(); toast(done); } catch (e) { toast(e.message, 'error'); } };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    if (!editUser || !editName.trim()) {
+      toast('Name is required.', 'error');
+      return;
+    }
+    await act(
+      () => api(`/admin/users/${editUser.id || editUser._id}`, {
+        method: 'PATCH',
+        body: { name: editName.trim(), roll: editRoll.trim(), dept: editDept.trim() }
+      }),
+      `Updated ${editName.trim()}.`
+    );
+    setEditUser(null);
+  };
 
   const handleAddUser = async (e) => {
     e.preventDefault();
     setAddError('');
     if (!newName.trim() || !newEmail.trim()) {
       setAddError('Full name and email address are required.');
+      return;
+    }
+    if (newPassword.trim().length < 8) {
+      setAddError('Password must be at least 8 characters long.');
       return;
     }
     setAdding(true);
@@ -107,14 +131,14 @@ function Users() {
           role: newRole,
           roll: newIdCode.trim() || undefined,
           dept: newDept.trim() || undefined,
-          password: newPassword.trim() || 'TrustVault@2026'
+          password: newPassword.trim()
         }
       });
       toast(`${ROLE_LABELS[newRole] || newRole} account created for ${newName.trim()}.`);
       setNewName('');
       setNewEmail('');
       setNewIdCode('');
-      setNewPassword('TrustVault@2026');
+      setNewPassword('');
       setShowAdd(false);
       reload();
     } catch (err) {
@@ -135,8 +159,8 @@ function Users() {
 
   const savePassword = async (e) => {
     e.preventDefault();
-    if (!pwdUser || pwdValue.trim().length < 6) {
-      toast('Password must be at least 6 characters.', 'error');
+    if (!pwdUser || pwdValue.trim().length < 8) {
+      toast('Password must be at least 8 characters.', 'error');
       return;
     }
     await act(
@@ -144,6 +168,7 @@ function Users() {
       `Password updated for ${pwdUser.name}.`
     );
     setPwdUser(null);
+    setPwdValue('');
   };
 
   const all = data ?? [];
@@ -166,15 +191,12 @@ function Users() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><UserPlus className="size-4 text-primary" /> Create New User Account</CardTitle>
             <CardDescription>
-              Add a Faculty, Student, or Admin account. Students receive a default password (<code>TrustVault@2026</code>) which they can change later in Security.
+              Assign login email and password for a Faculty, Student, or Admin account. Users can update their password later in Security.
             </CardDescription>
           </CardHeader>
           <form className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" onSubmit={handleAddUser}>
             <Field label="Role">
-              <Select value={newRole} onValueChange={(r) => {
-                setNewRole(r);
-                if (r === 'student') setNewPassword('TrustVault@2026');
-              }}>
+              <Select value={newRole} onValueChange={setNewRole}>
                 <SelectTrigger className="h-10 w-full bg-card"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="verifier">Faculty</SelectItem>
@@ -195,8 +217,8 @@ function Users() {
             <Field label="Department">
               <Input value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="Department of Computer Applications" />
             </Field>
-            <Field label={newRole === 'student' ? 'Default Password (Editable)' : 'Account Password'}>
-              <Input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={6} placeholder="Minimum 6 characters" />
+            <Field label="Assigned Login Password">
+              <Input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={8} placeholder="Minimum 8 characters" />
             </Field>
             <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap items-center justify-between gap-3 pt-1">
               <ErrorText>{addError}</ErrorText>
@@ -216,12 +238,29 @@ function Users() {
             <CardDescription>{pwdUser.email} ({ROLE_LABELS[pwdUser.role] || pwdUser.role})</CardDescription>
           </CardHeader>
           <form className="flex flex-wrap items-end gap-3" onSubmit={savePassword}>
-            <Field label="New Password" className="min-w-64 flex-1">
-              <Input type="text" value={pwdValue} onChange={(e) => setPwdValue(e.target.value)} required minLength={6} />
+            <Field label="New Password (min 8 chars)" className="min-w-64 flex-1">
+              <Input type="text" value={pwdValue} onChange={(e) => setPwdValue(e.target.value)} required minLength={8} placeholder="Enter new password" />
             </Field>
-            <Button type="button" variant="outline" onClick={() => setPwdValue('TrustVault@2026')}>Use Default</Button>
             <Button type="submit">Save Password</Button>
             <Button type="button" variant="ghost" onClick={() => setPwdUser(null)}>Cancel</Button>
+          </form>
+        </Card>
+      )}
+
+      {editUser && (
+        <Card className="border-primary/40 bg-card">
+          <CardHeader>
+            <CardTitle>Update Details for {editUser.name}</CardTitle>
+            <CardDescription>{editUser.email} ({ROLE_LABELS[editUser.role] || editUser.role})</CardDescription>
+          </CardHeader>
+          <form className="grid gap-3 sm:grid-cols-3" onSubmit={saveEdit}>
+            <Field label="Full Name"><Input value={editName} onChange={(e) => setEditName(e.target.value)} required /></Field>
+            <Field label="Roll / Staff ID"><Input value={editRoll} onChange={(e) => setEditRoll(e.target.value.toUpperCase())} className="font-mono uppercase" /></Field>
+            <Field label="Department"><Input value={editDept} onChange={(e) => setEditDept(e.target.value)} /></Field>
+            <div className="sm:col-span-3 flex gap-2 justify-end">
+              <Button type="button" variant="ghost" onClick={() => setEditUser(null)}>Cancel</Button>
+              <Button type="submit">Save Changes</Button>
+            </div>
           </form>
         </Card>
       )}
@@ -243,7 +282,8 @@ function Users() {
               <TableCell className="whitespace-nowrap">{fmtDate(u.createdAt)}</TableCell>
               <TableCell>
                 <span className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={() => { setPwdUser(u); setPwdValue('TrustVault@2026'); }} title="Set or reset password"><KeyRound className="size-3.5" /> Password</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setEditUser(u); setEditName(u.name || ''); setEditRoll(u.studentId || u.roll || ''); setEditDept(u.dept || ''); }}>Edit</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setPwdUser(u); setPwdValue(''); }} title="Set or reset password"><KeyRound className="size-3.5" /> Password</Button>
                   {u.locked && <Button size="sm" onClick={() => act(() => api(`/admin/users/${u.id || u._id}/unlock`, { method: 'POST' }), `${u.name} unlocked.`)}>Unlock</Button>}
                   <Button size="sm" variant="destructive" onClick={() => removeUser(u)} title="Remove user"><Trash2 className="size-3.5" /> Remove</Button>
                 </span>
@@ -298,7 +338,25 @@ function Invites() {
         </form>
       </Card>
       <div className="grid gap-3">
-        <ErrorText>{error}</ErrorText>
+        {editUser && (
+        <Card className="border-primary/40 bg-card">
+          <CardHeader>
+            <CardTitle>Update Details for {editUser.name}</CardTitle>
+            <CardDescription>{editUser.email} ({ROLE_LABELS[editUser.role] || editUser.role})</CardDescription>
+          </CardHeader>
+          <form className="grid gap-3 sm:grid-cols-3" onSubmit={saveEdit}>
+            <Field label="Full Name"><Input value={editName} onChange={(e) => setEditName(e.target.value)} required /></Field>
+            <Field label="Roll / Staff ID"><Input value={editRoll} onChange={(e) => setEditRoll(e.target.value.toUpperCase())} className="font-mono uppercase" /></Field>
+            <Field label="Department"><Input value={editDept} onChange={(e) => setEditDept(e.target.value)} /></Field>
+            <div className="sm:col-span-3 flex gap-2 justify-end">
+              <Button type="button" variant="ghost" onClick={() => setEditUser(null)}>Cancel</Button>
+              <Button type="submit">Save Changes</Button>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      <ErrorText>{error}</ErrorText>
         {data && !data.length && <EmptyState icon={MailPlus} title="No invitations yet" steps={[[MailPlus, 'Enter their email and pick faculty or admin'], [Link2, 'They get a one-time link that works only for that address'], [Check, 'They set a password and Google Authenticator, then appear in Users']]}>
           Bring in a faculty member or another admin without them needing a sign-up code.
         </EmptyState>}
@@ -415,6 +473,24 @@ function Requests() {
         <Segmented label="Filter requests" value={filter} onChange={setFilter} options={REQ_FILTERS.map(([k, label]) => [k, label, all.filter((a) => k === 'all' || a.status === k).length])} />
         <SearchBox value={q} onChange={setQ} placeholder="Search faculty, student or roll number…" label="Search requests" />
       </div>
+      {editUser && (
+        <Card className="border-primary/40 bg-card">
+          <CardHeader>
+            <CardTitle>Update Details for {editUser.name}</CardTitle>
+            <CardDescription>{editUser.email} ({ROLE_LABELS[editUser.role] || editUser.role})</CardDescription>
+          </CardHeader>
+          <form className="grid gap-3 sm:grid-cols-3" onSubmit={saveEdit}>
+            <Field label="Full Name"><Input value={editName} onChange={(e) => setEditName(e.target.value)} required /></Field>
+            <Field label="Roll / Staff ID"><Input value={editRoll} onChange={(e) => setEditRoll(e.target.value.toUpperCase())} className="font-mono uppercase" /></Field>
+            <Field label="Department"><Input value={editDept} onChange={(e) => setEditDept(e.target.value)} /></Field>
+            <div className="sm:col-span-3 flex gap-2 justify-end">
+              <Button type="button" variant="ghost" onClick={() => setEditUser(null)}>Cancel</Button>
+              <Button type="submit">Save Changes</Button>
+            </div>
+          </form>
+        </Card>
+      )}
+
       <ErrorText>{error}</ErrorText>
       {loading ? <SkeletonRows /> : (
         <Table>

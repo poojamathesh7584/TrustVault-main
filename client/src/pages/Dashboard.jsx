@@ -188,7 +188,7 @@ export default function Dashboard() {
             </>}
           </div>
         </div>
-        {role !== 'admin' && <div className="relative" data-tilt="">{!loading && <Wallet docs={docs} holder={(user?.name || 'STUDENT').toUpperCase()} />}</div>}
+        {role === 'student' && <div className="relative" data-tilt="">{!loading && <Wallet docs={docs} holder={(user?.name || 'STUDENT').toUpperCase()} />}</div>}
       </section>
 
       {!loading && (

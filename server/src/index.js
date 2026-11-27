@@ -2,7 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const path = require('path');
+const helmet = require('helmet');
 const config = require('./config');
 
 // Prevent Mongoose from buffering commands when MongoDB is disconnected
@@ -17,14 +17,39 @@ const adminRoutes = require('./routes/admin');
 
 const app = express();
 
-// Middlewares
-app.use(cors({
-  origin: true,
-  credentials: true
+// --- Security Middlewares ---
+
+// Helmet for security headers (XSS protection, content-type sniffing, etc.)
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: false // Disable CSP in dev (React dev server needs it)
 }));
+
+// CORS — allow configured clientOrigin as well as localhost / LAN Vite dev origins
+const allowedOrigins = new Set([
+  config.clientOrigin || 'http://localhost:5173',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+]);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(cookieParser());
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+
+// Disable X-Powered-By header
+app.disable('x-powered-by');
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -43,17 +68,17 @@ app.use('/api/access', accessRoutes);
 app.use('/api/shares', shareRoutes);
 app.use('/api/admin', adminRoutes);
 
-// Global Error Handler
+// Global Error Handler — don't leak stack traces in production
 app.use((err, req, res, next) => {
   console.error('API Error:', err.stack);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error'
-  });
+  const message = config.env === 'production'
+    ? 'Internal Server Error'
+    : (err.message || 'Internal Server Error');
+  res.status(err.status || 500).json({ error: message });
 });
 
 let currentServer = null;
 
-// Start HTTP server immediately and connect to MongoDB in background
 async function startServer(port = Number(config.port) || 5000) {
   if (currentServer) {
     try { currentServer.close(); } catch {}
@@ -67,7 +92,7 @@ async function startServer(port = Number(config.port) || 5000) {
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       const nextPort = Number(port) + 1;
-      console.warn(`[TrustVault] Notice: Port ${port} is occupied. Attempting port ${nextPort}...`);
+      console.warn(`[TrustVault] Port ${port} is occupied. Trying port ${nextPort}...`);
       try { server.close(); } catch {}
       setTimeout(() => startServer(nextPort), 600);
     } else {
@@ -75,21 +100,39 @@ async function startServer(port = Number(config.port) || 5000) {
     }
   });
 
-  process.once('SIGTERM', () => {
-    try { server.close(); } catch {}
-  });
-  process.once('SIGINT', () => {
-    try { server.close(); } catch {}
-  });
+  process.once('SIGTERM', () => { try { server.close(); } catch {} });
+  process.once('SIGINT', () => { try { server.close(); } catch {} });
 
   try {
-    console.log(`[TrustVault] Connecting to MongoDB at: ${config.mongoUri}...`);
+    console.log(`[TrustVault] Connecting to MongoDB...`);
     await mongoose.connect(config.mongoUri, {
       serverSelectionTimeoutMS: 5000
     });
     console.log('[TrustVault] MongoDB connection established successfully!');
+
+    // Ensure primary administrator account exists
+    try {
+      const User = require('./models/User');
+      const { hashPassword } = require('./lib/crypto');
+      const adminEmail = 'poojamatheshwaran6363@gmail.com';
+      const existingAdmin = await User.findOne({ email: adminEmail });
+      if (!existingAdmin) {
+        await User.create({
+          name: 'Pooja Matheshwaran',
+          email: adminEmail,
+          password: await hashPassword(process.env.ADMIN_INIT_PASSWORD || 'TrustVault@2026'),
+          role: 'admin',
+          roll: 'ADM-01',
+          dept: 'Central Examination & Verification Cell',
+          hasVaultPin: false
+        });
+        console.log(`[TrustVault] Primary admin ensured: ${adminEmail}`);
+      }
+    } catch (seedErr) {
+      console.warn('[TrustVault] Admin bootstrap check skipped:', seedErr.message);
+    }
   } catch (err) {
-    console.warn(`[TrustVault] Notice: MongoDB connection could not be established (${err.message}).`);
+    console.warn(`[TrustVault] MongoDB connection failed: ${err.message}`);
     console.warn('[TrustVault] Please ensure MongoDB service is running or configure MONGO_URI in server/.env');
   }
 

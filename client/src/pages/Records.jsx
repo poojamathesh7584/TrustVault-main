@@ -394,11 +394,11 @@ export function StudentRecord() {
             <TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Type</TableHead><TableHead>Number</TableHead><TableHead>Checks</TableHead><TableHead>Status</TableHead><TableHead>Uploaded</TableHead><TableHead><span className="sr-only">Open</span></TableHead></TableRow></TableHeader>
             <TableBody>
               {(documents || []).map((d) => (
-                <TableRow key={d.id}>
+                <TableRow key={d.id || d._id}>
                   <TableCell className="font-semibold">{d.title} {d.tampered && <Badge variant="destructive">Tampered</Badge>}</TableCell><TableCell>{TYPE_LABELS[d.type] || d.type}</TableCell>
                   <TableCell className="font-mono">{d.numberMasked || '-'}</TableCell><TableCell><ScoreBar check={d.autoCheck} /></TableCell>
                   <TableCell><DocStatus status={d.status} /></TableCell><TableCell className="whitespace-nowrap">{fmtDate(d.createdAt)}</TableCell>
-                  <TableCell>{d.canOpen ? <Button size="sm" onClick={() => setViewing(d)}><Eye /> Open once</Button> : <Badge variant="outline">Already opened</Badge>}</TableCell>
+                  <TableCell><Button size="sm" onClick={() => setViewing(d)}><Eye /> View</Button></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -406,7 +406,7 @@ export function StudentRecord() {
         </Card>
       )}
       <RequestAccess student={student} access={access} onSent={reload} />
-      {viewing && <DocViewer doc={viewing} onClose={() => { setViewing(null); reload(); }} />}
+      {viewing && <DocViewer doc={viewing} viewUrl={`/records/students/${id}/documents/${viewing.id || viewing._id}/view`} onClose={() => { setViewing(null); reload(); }} />}
     </div>
   );
 }
@@ -422,7 +422,7 @@ function BatchRequest({ group, count, onSent }) {
     const form = e.currentTarget;
     setError(''); setBusy(true);
     try {
-      const r = await api('/records/batch-request', { method: 'POST', body: { group, types: picked, reason: new FormData(form).get('reason') } });
+      const r = await api('/records/request-batch', { method: 'POST', body: { group, types: picked, reason: new FormData(form).get('reason') } });
       toast(r.sent
         ? `Request sent to ${r.sent} student${r.sent === 1 ? '' : 's'} in ${r.group}${r.skipped ? ` (${r.skipped} already had a request waiting)` : ''}.`
         : `Everyone in ${r.group} already has a request from you waiting.`);

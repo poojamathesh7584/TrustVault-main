@@ -1,14 +1,19 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const AccessRequest = require('../models/AccessRequest');
-const User = require('../models/User');
 const { authMiddleware } = require('../middleware/auth');
 const { recordAudit } = require('../lib/auditLedger');
+const { logActivity } = require('../lib/activityLogger');
 
 const router = express.Router();
 
 // 1. GET /api/access - List access requests
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
     const isStudent = req.user.role === 'student';
     let filter;
 
@@ -36,6 +41,8 @@ router.get('/', authMiddleware, async (req, res) => {
           { $set: { studentId: req.user._id } }
         );
       }
+    } else if (req.user.role === 'admin') {
+      filter = {};
     } else {
       filter = { facultyId: req.user._id };
     }
@@ -50,17 +57,17 @@ router.get('/', authMiddleware, async (req, res) => {
       _id: item._id.toString(),
       student: item.studentId || {
         name: item.targetRoll ? `Student ${item.targetRoll}` : (item.targetEmail ? item.targetEmail.split('@')[0] : 'Student'),
-        email: item.targetEmail || 'student@trustvault.edu',
-        roll: item.targetRoll || '26MX337'
+        email: item.targetEmail || '',
+        roll: item.targetRoll || ''
       },
       faculty: item.facultyId,
       verifier: {
-        name: item.facultyId?.name || 'Dr. Priya Raman',
-        email: item.facultyId?.email || 'priya.raman@trustvault.demo',
+        name: item.facultyId?.name || 'Faculty Verifier',
+        email: item.facultyId?.email || '',
         role: 'verifier',
-        dept: item.facultyId?.dept || 'Department of Computer Applications'
+        dept: item.facultyId?.dept || ''
       },
-      verifierDept: item.facultyId?.dept || 'Department of Computer Applications',
+      verifierDept: item.facultyId?.dept || '',
       types: item.types,
       granted: item.granted,
       reason: item.reason,
@@ -72,14 +79,25 @@ router.get('/', authMiddleware, async (req, res) => {
 
     res.json(formatted);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load access requests.' });
   }
 });
 
 // 2. POST /api/access/:id - Respond to access request (approve, deny, revoke)
 router.post('/:id', authMiddleware, async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid access request ID.' });
+    }
+
     const { decision = 'approve', types } = req.body || {};
+    if (!['approve', 'deny', 'revoke'].includes(decision)) {
+      return res.status(400).json({ error: 'Invalid decision. Must be approve, deny, or revoke.' });
+    }
+
     let status = 'approved';
     if (decision === 'deny') status = 'denied';
     if (decision === 'revoke') status = 'revoked';
@@ -89,10 +107,22 @@ router.post('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Access request not found.' });
     }
 
+    // Authorization check: only the target student (or admin) can respond to an access request
+    const userEmail = (req.user.email || '').toLowerCase().trim();
+    const userRoll = (req.user.roll || '').toUpperCase().trim();
+    const isOwner =
+      (reqDoc.studentId && String(reqDoc.studentId) === String(req.user._id)) ||
+      (reqDoc.targetEmail && userEmail && reqDoc.targetEmail === userEmail) ||
+      (reqDoc.targetRoll && userRoll && reqDoc.targetRoll === userRoll);
+
+    if (!isOwner && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: you can only respond to your own access requests.' });
+    }
+
     reqDoc.status = status;
     reqDoc.respondedAt = new Date();
     if (status === 'approved') {
-      reqDoc.granted = types && types.length ? types : reqDoc.types;
+      reqDoc.granted = Array.isArray(types) && types.length ? types : reqDoc.types;
       reqDoc.expiresAt = new Date(Date.now() + 7 * 86400000);
     }
     await reqDoc.save();
@@ -105,11 +135,18 @@ router.post('/:id', authMiddleware, async (req, res) => {
       ip: req.ip
     });
 
+    await logActivity({
+      action: `ACCESS_${status.toUpperCase()}`,
+      detail: `Access request ${status} for ${reqDoc.facultyId?.name || 'Faculty'}`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
+
     res.json({ ok: true, request: reqDoc });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update access request.' });
   }
 });
 
 module.exports = router;
-

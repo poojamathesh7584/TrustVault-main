@@ -4,304 +4,349 @@ const User = require('../models/User');
 const Document = require('../models/Document');
 const AccessRequest = require('../models/AccessRequest');
 const Audit = require('../models/Audit');
+const ActivityLog = require('../models/ActivityLog');
 const { authMiddleware, requireRole } = require('../middleware/auth');
 const { verifyLedgerIntegrity, recordAudit } = require('../lib/auditLedger');
 const { hashPassword } = require('../lib/crypto');
-const { getAllUsers, saveAllUsers } = require('../lib/userStore');
 
 const router = express.Router();
 
-// 1. GET /api/admin/stats
-router.get('/stats', authMiddleware, async (req, res) => {
-  try {
-    let studentCount = 0;
-    let verifierCount = 0;
-    let adminCount = 0;
-    let verifiedDocs = 0;
-    let pendingDocs = 0;
-    let rejectedDocs = 0;
-    let ledgerCount = 0;
+// All admin routes require admin role
+router.use(authMiddleware);
+router.use(requireRole('admin'));
 
-    if (mongoose.connection.readyState === 1) {
-      studentCount = await User.countDocuments({ role: 'student' });
-      verifierCount = await User.countDocuments({ role: 'verifier' });
-      adminCount = await User.countDocuments({ role: 'admin' });
-      verifiedDocs = await Document.countDocuments({ status: 'verified' });
-      pendingDocs = await Document.countDocuments({ status: 'pending' });
-      rejectedDocs = await Document.countDocuments({ status: 'rejected' });
-      ledgerCount = await Audit.countDocuments();
-    } else {
-      const users = getAllUsers();
-      studentCount = users.filter((u) => u.role === 'student').length;
-      verifierCount = users.filter((u) => u.role === 'verifier').length;
-      adminCount = users.filter((u) => u.role === 'admin').length;
+// 1. GET /api/admin/stats
+router.get('/stats', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
     }
+
+    const [studentCount, verifierCount, adminCount, verifiedDocs, pendingDocs, rejectedDocs, ledgerCount, activityCount] = await Promise.all([
+      User.countDocuments({ role: 'student' }),
+      User.countDocuments({ role: 'verifier' }),
+      User.countDocuments({ role: 'admin' }),
+      Document.countDocuments({ status: 'verified' }),
+      Document.countDocuments({ status: 'pending' }),
+      Document.countDocuments({ status: 'rejected' }),
+      Audit.countDocuments(),
+      ActivityLog.countDocuments()
+    ]);
 
     const totalUsers = studentCount + verifierCount + adminCount;
     const totalDocs = verifiedDocs + pendingDocs + rejectedDocs;
 
+    // Count logins in last 24h from activity logs
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const logins24h = await ActivityLog.countDocuments({
+      action: { $in: ['LOGIN_SUCCESS', 'LOGIN_OTP'] },
+      createdAt: { $gte: oneDayAgo }
+    });
+
     res.json({
-      users: { student: studentCount || 1, verifier: verifierCount || 1, admin: adminCount || 1 },
-      documents: { verified: verifiedDocs || 120, pending: pendingDocs || 14, rejected: rejectedDocs || 2 },
-      logins24h: 38,
-      blocks: ledgerCount || 1250,
+      users: { student: studentCount, verifier: verifierCount, admin: adminCount },
+      documents: { verified: verifiedDocs, pending: pendingDocs, rejected: rejectedDocs },
+      logins24h,
+      blocks: ledgerCount,
       tampered: 0,
-      totalUsers: totalUsers || 3,
-      totalDocs: totalDocs || 136,
-      pendingVerifications: pendingDocs || 14,
-      ledgerRecords: ledgerCount || 1250,
-      systemHealth: '100% Tamper-Evident Ledger Integrity'
+      totalUsers,
+      totalDocs,
+      pendingVerifications: pendingDocs,
+      ledgerRecords: ledgerCount,
+      activityLogs: activityCount,
+      systemHealth: 'Tamper-Evident Ledger Active'
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load admin stats.' });
   }
 });
 
 // 2. GET /api/admin/users
-router.get('/users', authMiddleware, async (req, res) => {
+router.get('/users', async (req, res) => {
   try {
-    if (mongoose.connection.readyState === 1) {
-      const users = await User.find().sort({ role: 1, name: 1 });
-      if (users.length > 0) {
-        const formatted = users.map((u) => ({
-          ...u.toJSON(),
-          id: u._id.toString(),
-          studentId: u.roll || ''
-        }));
-        return res.json(formatted);
-      }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
     }
-    const localUsers = getAllUsers().map(({ password, ...rest }) => rest);
-    res.json(localUsers);
+
+    const users = await User.find().sort({ role: 1, name: 1 });
+    const formatted = users.map((u) => ({
+      id: u._id.toString(),
+      _id: u._id.toString(),
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      studentId: u.roll || '',
+      roll: u.roll || '',
+      batch: u.batch,
+      dept: u.dept,
+      status: u.status,
+      locked: Boolean(u.locked),
+      lockReason: u.lockReason || '',
+      failedOtpAttempts: u.failedOtpAttempts || 0,
+      hasVaultPin: u.hasVaultPin,
+      createdAt: u.createdAt
+    }));
+    res.json(formatted);
   } catch (err) {
-    const localUsers = getAllUsers().map(({ password, ...rest }) => rest);
-    res.json(localUsers);
+    res.status(500).json({ error: 'Failed to load users.' });
   }
 });
 
-// 2b. POST /api/admin/users - Create new Student, Faculty, or Admin account
-router.post('/users', authMiddleware, async (req, res) => {
+// 2b. POST /api/admin/users - Create user
+router.post('/users', async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
     const { name, email, role = 'student', roll, studentId, dept, batch, password } = req.body || {};
     if (!name || !email) {
       return res.status(400).json({ error: 'Name and email are required.' });
     }
-    const cleanEmail = String(email).trim().toLowerCase();
-    const targetRole = role === 'faculty' ? 'verifier' : (['student', 'verifier', 'admin'].includes(role) ? role : 'student');
-    const finalPassword = (password && String(password).trim()) ? String(password).trim() : 'TrustVault@2026';
-    const idCode = (roll || studentId || (targetRole === 'verifier' ? `FAC-${Math.floor(1000 + Math.random() * 9000)}` : targetRole === 'admin' ? `ADM-${Math.floor(10 + Math.random() * 90)}` : `26MX${Math.floor(100 + Math.random() * 900)}`)).toUpperCase();
 
-    if (mongoose.connection.readyState === 1) {
-      const existing = await User.findOne({ email: cleanEmail });
-      if (existing) {
-        return res.status(400).json({ error: `User with email '${cleanEmail}' already exists.` });
-      }
-      const created = await User.create({
-        name: name.trim(),
-        email: cleanEmail,
-        password: await hashPassword(finalPassword),
-        role: targetRole,
-        roll: idCode,
-        batch: batch || (targetRole === 'student' ? idCode.slice(0, 4) : undefined),
-        dept: dept || (targetRole === 'admin' ? 'Central Examination & Verification Cell' : 'Department of Computer Applications'),
-        hasVaultPin: true,
-        vaultPin: '482915'
-      });
-      await recordAudit({
-        action: 'USER_CREATE',
-        detail: `Admin created ${targetRole} account for ${name} (${cleanEmail})`,
-        userId: req.user._id,
-        userName: req.user.name,
-        ip: req.ip
-      });
-      return res.json({ ok: true, user: { ...created.toJSON(), id: created._id.toString(), studentId: created.roll } });
+    // Validate email format
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Invalid email format.' });
     }
 
-    const users = getAllUsers();
-    if (users.some((u) => u.email?.toLowerCase() === cleanEmail)) {
+    const targetRole = role === 'faculty' ? 'verifier' : (['student', 'verifier', 'admin'].includes(role) ? role : 'student');
+    if (!password || String(password).trim().length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    }
+    const finalPassword = String(password).trim();
+    const idCode = (roll || studentId || (
+      targetRole === 'verifier' ? `FAC-${Math.floor(1000 + Math.random() * 9000)}`
+        : targetRole === 'admin' ? `ADM-${Math.floor(10 + Math.random() * 90)}`
+        : `26MX${Math.floor(100 + Math.random() * 900)}`
+    )).toUpperCase();
+
+    const existing = await User.findOne({ email: cleanEmail });
+    if (existing) {
       return res.status(400).json({ error: `User with email '${cleanEmail}' already exists.` });
     }
 
-    const newId = `usr_${targetRole}_${Date.now()}`;
-    const newUser = {
-      id: newId,
-      _id: newId,
-      name: name.trim(),
+    const created = await User.create({
+      name: name.trim().substring(0, 100),
       email: cleanEmail,
+      password: await hashPassword(finalPassword),
       role: targetRole,
-      studentId: idCode,
       roll: idCode,
       batch: batch || (targetRole === 'student' ? idCode.slice(0, 4) : undefined),
       dept: dept || (targetRole === 'admin' ? 'Central Examination & Verification Cell' : 'Department of Computer Applications'),
-      password: finalPassword,
-      status: 'active',
-      totpEnabled: true,
-      hasVaultPin: true,
-      createdAt: new Date().toISOString()
-    };
+      hasVaultPin: false
+    });
 
-    users.unshift(newUser);
-    saveAllUsers(users);
+    await recordAudit({
+      action: 'USER_CREATE',
+      detail: `Admin created ${targetRole} account for ${name} (${cleanEmail})`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
 
-    const { password: _, ...safeUser } = newUser;
-    res.json({ ok: true, user: safeUser });
+    res.status(201).json({
+      ok: true,
+      user: {
+        id: created._id.toString(),
+        name: created.name,
+        email: created.email,
+        role: created.role,
+        roll: created.roll,
+        status: created.status
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to create user.' });
   }
 });
 
-// 2c. DELETE /api/admin/users/:id - Remove user account
-router.delete('/users/:id', authMiddleware, async (req, res) => {
+// 3. PATCH /api/admin/users/:id
+router.patch('/users/:id', async (req, res) => {
   try {
-    const targetId = req.params.id;
-    if (mongoose.connection.readyState === 1) {
-      const deleted = await User.findByIdAndDelete(targetId);
-      if (!deleted) return res.status(404).json({ error: 'User not found.' });
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    const { name, roll, batch, dept, role, status } = req.body || {};
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    if (name && typeof name === 'string') user.name = name.trim().substring(0, 100);
+    if (roll && typeof roll === 'string') {
+      user.roll = roll.trim().toUpperCase();
+      const bm = user.roll.match(/^([0-9]{2}[A-Za-z]{1,4})/i);
+      if (bm && !batch) user.batch = bm[1].toUpperCase();
+    }
+    if (batch && typeof batch === 'string') user.batch = batch.trim().toUpperCase();
+    if (dept && typeof dept === 'string') user.dept = dept.trim().substring(0, 120);
+    if (role && ['student', 'verifier', 'admin'].includes(role)) user.role = role;
+    if (status && ['active', 'inactive', 'suspended'].includes(status)) user.status = status;
+    await user.save();
+
+    await recordAudit({
+      action: 'USER_UPDATE',
+      detail: `Admin updated user ${user.name} (role: ${user.role}, status: ${user.status})`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
+
+    res.json({ ok: true, user: { id: user._id.toString(), name: user.name, role: user.role, status: user.status } });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update user.' });
+  }
+});
+
+router.post('/users/:id/reset-2fa', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    const u = await User.findById(req.params.id);
+    if (u) {
+      u.totpSecret = '';
+      u.vaultPin = '';
+      u.hasVaultPin = false;
+      await u.save();
       await recordAudit({
-        action: 'USER_DELETE',
-        detail: `Admin removed user ${deleted.name} (${deleted.email})`,
+        action: 'USER_RESET_2FA',
+        detail: `Admin reset 2FA for user ${u.name}`,
         userId: req.user._id,
         userName: req.user.name,
         ip: req.ip
       });
-      return res.json({ ok: true });
     }
-
-    const users = getAllUsers();
-    const filtered = users.filter((u) => u.id !== targetId && u._id !== targetId);
-    if (filtered.length === users.length) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-    saveAllUsers(filtered);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to reset 2FA.' });
   }
 });
 
-// 2d. POST /api/admin/users/:id/password - Set or reset user password
-router.post('/users/:id/password', authMiddleware, async (req, res) => {
+router.post('/users/:id/unlock', async (req, res) => {
   try {
-    const targetId = req.params.id;
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    const u = await User.findById(req.params.id);
+    if (u) {
+      u.status = 'active';
+      u.locked = false;
+      u.lockReason = '';
+      u.failedOtpAttempts = 0;
+      await u.save();
+      await recordAudit({
+        action: 'USER_UNLOCK',
+        detail: `Admin unlocked account for ${u.name}`,
+        userId: req.user._id,
+        userName: req.user.name,
+        ip: req.ip
+      });
+      await ActivityLog.create({
+        userId: req.user._id,
+        userName: req.user.name,
+        action: 'USER_UNLOCK',
+        detail: `Admin unlocked account for ${u.email}`,
+        ip: req.ip
+      });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to unlock user.' });
+  }
+});
+
+// 3b. POST /api/admin/users/:id/password - Admin assigns/resets user password
+router.post('/users/:id/password', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
     const { password } = req.body || {};
-    const newPass = (password && String(password).trim()) ? String(password).trim() : 'TrustVault@2026';
-
-    if (mongoose.connection.readyState === 1) {
-      const u = await User.findById(targetId);
-      if (!u) return res.status(404).json({ error: 'User not found.' });
-      u.password = await hashPassword(newPass);
-      await u.save();
-      await recordAudit({
-        action: 'USER_PASSWORD_RESET',
-        detail: `Admin updated password for ${u.name}`,
-        userId: req.user._id,
-        userName: req.user.name,
-        ip: req.ip
-      });
-      return res.json({ ok: true });
+    if (!password || String(password).trim().length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
     }
 
-    const users = getAllUsers();
-    const idx = users.findIndex((u) => u.id === targetId || u._id === targetId);
-    if (idx === -1) return res.status(404).json({ error: 'User not found.' });
-    users[idx].password = newPass;
-    saveAllUsers(users);
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    user.password = await hashPassword(String(password).trim());
+    await user.save();
+
+    await recordAudit({
+      action: 'ADMIN_PASSWORD_SET',
+      detail: `Admin set password for ${user.name} (${user.email}, ${user.role})`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
+
+    await ActivityLog.create({
+      userId: req.user._id,
+      userName: req.user.name,
+      action: 'ADMIN_PASSWORD_SET',
+      detail: `Admin assigned new login password for ${user.email}`,
+      ip: req.ip
+    });
+
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update user password.' });
   }
 });
 
-// 3. User operations: PATCH, reset-2fa, unlock
-router.patch('/users/:id', authMiddleware, async (req, res) => {
+// 3c. DELETE /api/admin/users/:id - Admin removes a user
+router.delete('/users/:id', async (req, res) => {
   try {
-    const { role, status } = req.body || {};
-    if (mongoose.connection.readyState === 1) {
-      const u = await User.findById(req.params.id);
-      if (!u) return res.status(404).json({ error: 'User not found.' });
-
-      if (role) u.role = role;
-      if (status) u.status = status;
-      await u.save();
-
-      await recordAudit({
-        action: 'USER_ROLE',
-        detail: `Admin updated user ${u.name} role/status to ${role || status}`,
-        userId: req.user._id,
-        userName: req.user.name,
-        ip: req.ip
-      });
-
-      return res.json({ ok: true, user: u });
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+    if (String(req.params.id) === String(req.user._id)) {
+      return res.status(400).json({ error: 'You cannot delete your own active admin account.' });
     }
 
-    const users = getAllUsers();
-    const idx = users.findIndex((u) => u.id === req.params.id || u._id === req.params.id);
-    if (idx === -1) return res.status(404).json({ error: 'User not found.' });
-    if (role) users[idx].role = role;
-    if (status) users[idx].status = status;
-    saveAllUsers(users);
-    res.json({ ok: true, user: users[idx] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
 
-router.post('/users/:id/reset-2fa', authMiddleware, async (req, res) => {
-  try {
-    if (mongoose.connection.readyState === 1) {
-      const u = await User.findById(req.params.id);
-      if (u) {
-        u.totpSecret = '';
-        await u.save();
-        await recordAudit({
-          action: 'USER_RESET_2FA',
-          detail: `Admin reset 2FA for user ${u.name}`,
-          userId: req.user._id,
-          userName: req.user.name,
-          ip: req.ip
-        });
-      }
-    }
+    await recordAudit({
+      action: 'USER_DELETE',
+      detail: `Admin removed ${user.role} account ${user.name} (${user.email})`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
+
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to remove user.' });
   }
 });
 
-router.post('/users/:id/unlock', authMiddleware, async (req, res) => {
+// 4. Audit & Activity Logs
+router.get('/audit', async (req, res) => {
   try {
-    if (mongoose.connection.readyState === 1) {
-      const u = await User.findById(req.params.id);
-      if (u) {
-        u.status = 'active';
-        await u.save();
-        await recordAudit({
-          action: 'USER_UNLOCK',
-          detail: `Admin unlocked account for ${u.name}`,
-          userId: req.user._id,
-          userName: req.user.name,
-          ip: req.ip
-        });
-      }
-    } else {
-      const users = getAllUsers();
-      const idx = users.findIndex((u) => u.id === req.params.id || u._id === req.params.id);
-      if (idx !== -1) {
-        users[idx].status = 'active';
-        users[idx].locked = false;
-        saveAllUsers(users);
-      }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
     }
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// 4. Audit & Requests
-router.get('/audit', authMiddleware, async (req, res) => {
-  try {
     const logs = await Audit.find().sort({ at: -1 }).limit(100);
     const formatted = logs.map((l) => ({
       id: l._id.toString(),
@@ -314,12 +359,29 @@ router.get('/audit', authMiddleware, async (req, res) => {
     }));
     res.json(formatted);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load audit logs.' });
   }
 });
 
-router.get('/requests', authMiddleware, async (req, res) => {
+router.get('/activity-logs', async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
+    const logs = await ActivityLog.find().sort({ createdAt: -1 }).limit(100);
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load activity logs.' });
+  }
+});
+
+router.get('/requests', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
     const list = await AccessRequest.find()
       .populate('studentId', 'name roll dept')
       .populate('facultyId', 'name dept')
@@ -329,9 +391,9 @@ router.get('/requests', authMiddleware, async (req, res) => {
       id: item._id.toString(),
       _id: item._id.toString(),
       studentName: item.studentId?.name || 'Student',
-      studentRoll: item.studentId?.roll || '23MX301',
-      verifierName: item.facultyId?.name || 'Dr. Priya Raman',
-      verifierDept: item.facultyId?.dept || 'Department of Computer Applications',
+      studentRoll: item.studentId?.roll || '',
+      verifierName: item.facultyId?.name || 'Faculty',
+      verifierDept: item.facultyId?.dept || '',
       types: item.types,
       status: item.status,
       reason: item.reason,
@@ -340,13 +402,17 @@ router.get('/requests', authMiddleware, async (req, res) => {
 
     res.json(formatted);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load requests.' });
   }
 });
 
 // 5. Ledger & Cryptographic Integrity Check
-router.get('/ledger', authMiddleware, async (req, res) => {
+router.get('/ledger', async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
     const blocks = await Audit.find().sort({ index: -1 }).limit(20);
     const formatted = blocks.map((b) => ({
       index: b.index,
@@ -359,12 +425,16 @@ router.get('/ledger', authMiddleware, async (req, res) => {
     }));
     res.json(formatted);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load ledger.' });
   }
 });
 
-router.post('/integrity', authMiddleware, async (req, res) => {
+router.post('/integrity', async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+
     const result = await verifyLedgerIntegrity();
     const docCount = await Document.countDocuments();
 
@@ -384,35 +454,21 @@ router.post('/integrity', authMiddleware, async (req, res) => {
       message: result.message
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to check integrity.' });
   }
 });
 
-// 6. Invites
-const sampleInvites = [
-  {
-    id: 'inv_1',
-    email: 'prof.shankar@trustvault.demo',
-    role: 'verifier',
-    invitedBy: 'Administrator',
-    status: 'pending',
-    expiresAt: new Date(Date.now() + 86400000 * 2).toISOString(),
-    code: 'FAC-8891',
-    createdAt: new Date().toISOString()
-  }
-];
-
-router.get('/invites', authMiddleware, (req, res) => {
-  res.json(sampleInvites);
+// 6. Invites (placeholder)
+router.get('/invites', (req, res) => {
+  res.json([]);
 });
 
-router.post('/invites', authMiddleware, (req, res) => {
+router.post('/invites', (req, res) => {
   res.json({ ok: true });
 });
 
-router.delete('/invites/:id', authMiddleware, (req, res) => {
+router.delete('/invites/:id', (req, res) => {
   res.json({ ok: true });
 });
 
 module.exports = router;
-

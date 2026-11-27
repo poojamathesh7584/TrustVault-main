@@ -3,6 +3,8 @@ client/dist/
 client-classic/dist/
 server/.env
 server/storage/
+server/data/uploads/
+server/data/*.json
 server/dev-mail/
 server/.ocr-cache/
 *.log

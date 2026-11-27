@@ -37,10 +37,13 @@ const TYPE_TILE = {
   class10: [School, 'Stored as it is, no checks', '#38bdf8'],
   class12: [BookOpen, 'Stored as it is, no checks', '#a78bfa'],
   marksheet: [GraduationCap, 'Any semester marksheet', 'var(--success)'],
-  certificate: [Award, 'Bonafide, course and college certificates', '#fbbf24'],
+  degree: [Award, 'Degree / Provisional certificate', 'var(--primary)'],
+  certificate: [Award, 'Bonafide, TC, course & college certificates', '#fbbf24'],
+  income: [FileText, 'Income certificate for scholarship', '#38bdf8'],
+  community: [FileText, 'Community / Caste certificate', '#a78bfa'],
   other: [FileText, 'Anything else. Stored safely, not verified', 'var(--pink)'],
 };
-const TYPE_TONE = { pan: 'bg-linear-to-r from-primary to-success', aadhaar: 'bg-linear-to-r from-violet to-info', license: 'bg-info', class10: 'bg-info', class12: 'bg-pink', marksheet: 'bg-linear-to-r from-success to-primary', certificate: 'bg-success', other: 'bg-muted' };
+const TYPE_TONE = { pan: 'bg-linear-to-r from-primary to-success', aadhaar: 'bg-linear-to-r from-violet to-info', license: 'bg-info', class10: 'bg-info', class12: 'bg-pink', marksheet: 'bg-linear-to-r from-success to-primary', degree: 'bg-linear-to-r from-primary to-violet', certificate: 'bg-success', income: 'bg-info', community: 'bg-violet', other: 'bg-muted' };
 
 // Plain-language advice for each failed automatic check.
 const TIPS = [
@@ -184,76 +187,80 @@ const QUALITY = [['original', 'Original', 'Exact files, no compression'], ['medi
 
 function ExportModal({ docs, onClose }) {
   const { user } = useAuth();
-  const [selected, setSelected] = useState(docs.map((d) => d.id));
+  const verifiedDocs = docs.filter((d) => d.status === 'verified');
+  const [selected, setSelected] = useState(verifiedDocs.map((d) => d.id || d._id));
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const toggle = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const send = async ({ pin, quality, targetKB }) => {
-    if (!selected.length) throw new Error('Select at least one document.');
-    const limit = quality === 'limit' ? Number(targetKB) : null;
-    if (quality === 'limit' && !(limit >= 20 && limit <= 10240)) throw new Error('Type a size limit between 20 and 10240 KB.');
-    const selectedDocs = docs.filter(d => selected.includes(d.id || d._id));
-    setResult(await api('/documents/export', {
-      method: 'POST',
-      body: {
-        ids: selected,
-        pin,
-        email: user?.email || 'poojamathesh7584@gmail.com',
-        userName: user?.name || 'Verified Student',
-        docs: selectedDocs,
-        ...(limit ? { targetKB: limit } : { quality })
-      }
-    }));
+  const send = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!selected.length) {
+      setError('Select at least one verified document.');
+      return;
+    }
+    if (!password) {
+      setError('Enter your TrustVault login password to encrypt the ZIP.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api('/documents/export', {
+        method: 'POST',
+        body: {
+          ids: selected,
+          password,
+          email: user?.email,
+          userName: user?.name
+        }
+      });
+      setResult(res);
+    } catch (err) {
+      setError(err.message || 'Could not export ZIP.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <Modal title="Email me my documents" onClose={onClose}>
+    <Modal title="Email me my verified documents (ZIP)" onClose={onClose}>
       {result ? (
         <div className="grid gap-4">
           <Callout tone="ok" className="flex items-center gap-2"><CheckCircle2 className="size-4" /> Sent to {result.sentTo}</Callout>
           <p className="text-sm">{result.summary}</p>
           {result.sizes?.length > 0 && <ul className="grid gap-1 font-mono text-xs text-muted-foreground">{result.sizes.map((x) => <li key={x}>{x}</li>)}</ul>}
-          <div className="grid gap-2 border border-border bg-muted p-3">
-            <span className="text-sm font-semibold">ZIP password - write it down now, it is not in the email</span>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <code className="font-mono text-lg font-semibold break-all">{result.zipPassword}</code>
-              <Button size="sm" variant="outline" onClick={() => copyText(result.zipPassword, 'Password copied.')}><Copy /> Copy</Button>
-            </div>
-          </div>
           <Callout className="grid gap-1.5 text-xs">
             <b>How to open the ZIP</b>
-            <span>It is locked with AES-256, so Windows' own "Extract All" cannot open it. Use the free <a className="font-semibold underline" href="https://www.7-zip.org/" target="_blank" rel="noreferrer">7-Zip</a> (or WinRAR, or your phone's file manager):</span>
-            <ol className="ml-4 list-decimal">
-              <li>Save the ZIP from the email.</li>
-              <li>Right-click it, choose <b>7-Zip → Extract Here</b> (on Windows 11 click <b>Show more options</b> first).</li>
-              <li>Type the password above.</li>
-            </ol>
+            <span>The ZIP is encrypted with AES-256 using your <b>TrustVault login password</b>. Use <a className="font-semibold underline" href="https://www.7-zip.org/" target="_blank" rel="noreferrer">7-Zip</a> or WinRAR and enter your login password to extract.</span>
           </Callout>
           <Button onClick={onClose}>Done</Button>
         </div>
+      ) : !verifiedDocs.length ? (
+        <div className="grid gap-4">
+          <Callout tone="warn" className="text-sm">Only <b>verified</b> documents can be exported as an encrypted ZIP.</Callout>
+          <Button onClick={onClose}>Close</Button>
+        </div>
       ) : (
-        <PinForm submitText="Compress, encrypt & email" onSubmit={send}>
+        <form className="grid gap-4" onSubmit={send}>
           <fieldset className="grid gap-2">
-            <legend className="mb-2 text-sm font-semibold">Documents</legend>
-            {docs.map((d) => (
-              <CheckRow key={d.id} checked={selected.includes(d.id)} onChange={() => toggle(d.id)}>{d.title} <span className="text-xs text-muted-foreground">({fmtSize(d.size)})</span></CheckRow>
-            ))}
+            <legend className="mb-2 text-sm font-semibold">Verified Documents</legend>
+            {verifiedDocs.map((d) => {
+              const id = d.id || d._id;
+              return (
+                <CheckRow key={id} checked={selected.includes(id)} onChange={() => toggle(id)}>
+                  {d.title} <span className="text-xs text-muted-foreground">({fmtSize(d.size)})</span>
+                </CheckRow>
+              );
+            })}
           </fieldset>
-          <fieldset className="grid gap-2 sm:grid-cols-2">
-            <legend className="mb-2 text-sm font-semibold">File size</legend>
-            {QUALITY.map(([value, title, hint]) => (
-              <label key={value} className="grid cursor-pointer gap-0.5 rounded-lg border border-border bg-card p-3 transition-[border-color,box-shadow,background-color] duration-200 has-checked:border-primary has-checked:bg-primary/15 has-checked:shadow-glow has-focus-visible:outline-3 has-focus-visible:outline-ring">
-                <input type="radio" name="quality" value={value} defaultChecked={value === 'medium'} className="sr-only" />
-                <b className="text-sm">{title}</b><span className="text-xs opacity-80">{hint}</span>
-              </label>
-            ))}
-            <label className="grid cursor-pointer gap-1.5 rounded-lg border border-border bg-card p-3 transition-[border-color,box-shadow,background-color] duration-200 has-checked:border-primary has-checked:bg-primary/10 has-checked:shadow-glow">
-              <span className="flex items-center gap-2"><input type="radio" name="quality" value="limit" className="sr-only" /><b className="text-sm">Size limit</b><span className="text-xs opacity-80">each file at most</span></span>
-              <span className="flex items-center gap-2"><Input name="targetKB" type="number" inputMode="numeric" min={20} max={10240} placeholder="200" className="h-9 w-24 font-mono"
-                onFocus={(e) => { e.currentTarget.closest('label').querySelector('input[type=radio]').checked = true; }} /><span className="text-sm font-semibold">KB</span></span>
-              <span className="text-xs opacity-80">For forms that say e.g. "max 200 KB". Photos shrink to fit; PDFs only a little.</span>
-            </label>
-          </fieldset>
-        </PinForm>
+          <Field label="Confirm your TrustVault login password (used as the ZIP password)">
+            <Input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your login password" autoComplete="current-password" />
+          </Field>
+          <ErrorText>{error}</ErrorText>
+          <Button disabled={busy}>{busy ? 'Encrypting & emailing…' : 'Encrypt with login password & email ZIP'}</Button>
+        </form>
       )}
     </Modal>
   );
@@ -326,7 +333,7 @@ function DocCard({ d, i = 0, open, onToggle, onAction }) {
         {d.status === 'rejected' && d.reviewNote && <ErrorText>{d.reviewNote}</ErrorText>}
         <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={() => onAction('view', d)}><Eye /> View</Button>
-          <Button size="sm" variant="outline" onClick={() => onAction('share', d)}><Share2 /> Share</Button>
+          {d.status === 'verified' && <Button size="sm" variant="outline" onClick={() => onAction('share', d)}><Share2 /> Share</Button>}
           {d.status !== 'verified' && !suggested && <Button size="sm" variant="outline" onClick={() => onAction('retype', d)}><Repeat /> Change type</Button>}
           <Button size="sm" variant="ghost" className="ml-auto" onClick={() => onAction('delete', d)} aria-label={`Delete ${d.title}`}><Trash2 /> Delete</Button>
         </div>

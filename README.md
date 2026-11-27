@@ -1,120 +1,100 @@
-# TrustVault 🔐
-### Full-Stack Digital Identity & Document Verification Portal
-**Built with Node.js, Express.js, MongoDB (Mongoose), and React 19**
+# TrustVault — College Digital Identity & Document Verification Portal
 
-TrustVault is an enterprise-grade academic digital identity and document verification portal. It empowers students, faculty verifiers, and administrative audit officers to store, review, and verify academic records with cryptographic SHA-256 tamper-evident audit trails.
+TrustVault is a full-stack web application (**React + Vite + Node.js + Express + MongoDB Atlas**) built for colleges to securely verify, store, and share student academic and identity credentials with strict role-based access control, email OTP two-factor authentication, automated document verification, and a tamper-evident SHA-256 audit ledger.
 
 ---
 
-## 🏛️ Full-Stack System Architecture
+## Key Features
+
+### 1. Authentication & Security
+- **Student-Only Self-Registration (`/register`)**: Students sign up with their full name, college roll/register number, valid email address, and strong password (min 8 characters, `bcryptjs` hashed).
+- **Email + Password + Email OTP Login (`/login`)**:
+  - **Step 1**: Student, Faculty, or Admin enters their email and password.
+  - **Step 2**: A 6-digit OTP is generated (`crypto.randomInt`) and sent to the user's registered email via SMTP (stored in MongoDB with a 10-minute TTL).
+  - **5-Attempt Lockout**: 5 consecutive wrong OTP attempts automatically lock the account in MongoDB. Only the **Administrator** can unlock a locked account.
+- **Hardened Backend**: `helmet` security headers, strict CORS, per-IP rate limiting, JWT HTTP-only cookies + Bearer auth, and zero plaintext JSON log/user stores.
+
+### 2. Roles & Permissions
+- **Student**:
+  - Upload identity & college documents (**PAN Card, Aadhaar Card, Driving Licence, 10th Marksheet, 12th Marksheet, Semester Marksheet, Degree Certificate, College Certificate, Income Certificate, Community Certificate, Other**).
+  - Automated verification checks: format/checksum validation (Verhoeff for Aadhaar, PAN entity regex, DL regex), official header keyword extraction (OCR / PDF text), anti-tamper metadata scan, holder name/number matching, resolution check, and duplicate SHA-256 hash detection.
+  - **View with Watermark**: Verified documents open with an overlay watermark (`TRUSTVAULT · email`) and full verification metadata (status, score, SHA-256 fingerprint).
+  - **Password-Protected ZIP Export**: Export **verified** documents as an AES-256 encrypted ZIP file emailed to the student's registered email, encrypted using the student's **TrustVault login password**.
+  - **Consent-Driven Access Control**: Receive notifications when faculty request documents (with reason) and choose to **Approve** or **Deny** specific document types.
+- **Faculty (`verifier`)**:
+  - Provisioned by the Administrator (login email & password assigned by Admin).
+  - Request documents from an **entire batch** or a **specific student** by email/roll number with a purpose/reason.
+  - View **only verified** documents for which the student has granted **consent** (approved & unexpired). Every view is logged in the audit ledger.
+  - Dynamic **Student Records** & **Batches** view that automatically reflects newly registered students and batches.
+- **Administrator (`poojamatheshwaran6363@gmail.com`)**:
+  - Create Faculty, Student, or Admin accounts and assign login emails & passwords.
+  - Update user details (name, roll/ID, department, role), reset passwords, remove users, and **unlock** OTP-locked accounts.
+  - Inspect the **SHA-256 Audit Ledger**, run cryptographic integrity checks, and view **Activity Logs** stored in MongoDB.
+  - **Privacy Enforced**: Administrators cannot view or access student documents.
+
+---
+
+## Project Structure
 
 ```text
-TrustVault/
-├── server/                         # Backend (Node.js & Express.js REST API)
-│   ├── src/
-│   │   ├── models/                 # Mongoose Database Schemas
-│   │   │   ├── User.js             # User profiles, passwords, TOTP & PINs
-│   │   │   ├── Document.js         # Vault docs, MIME, metadata, SHA-256 hashes
-│   │   │   ├── AccessRequest.js    # Student consent & faculty access permissions
-│   │   │   ├── Audit.js            # Cryptographic SHA-256 blockchain audit ledger
-│   │   │   └── Share.js            # Time-limited public external view links
-│   │   ├── routes/                 # Express API Endpoint Handlers
-│   │   │   ├── auth.js             # Sign-in, 1-Click Demo Login, JWT, PIN, Profile
-│   │   │   ├── documents.js        # Upload, Verhoeff/PAN checks, watermarking
-│   │   │   ├── records.js          # Faculty student search, batch reviews & requests
-│   │   │   ├── access.js           # Student consent approvals & revocations
-│   │   │   ├── shares.js           # Time-limited external shares & views
-│   │   │   └── admin.js            # Admin stats, user controls & ledger verification
-│   │   ├── middleware/             # JWT authentication & role authorization guards
-│   │   ├── lib/                    # Cryptographic hashing & Verhoeff algorithms
-│   │   ├── config.js               # Environment configuration loader
-│   │   └── index.js                # Express app entry & MongoDB connection
-│   ├── scripts/
-│   │   └── seed.js                 # Database seeder populating demo data
-│   ├── .env                        # Server configuration (PORT, MONGO_URI, JWT_SECRET)
-│   └── package.json
-│
-├── client/                         # Frontend (React 19 + Vite + Tailwind CSS)
-│   ├── src/
-│   │   ├── pages/                  # Responsive views (Dashboard, Documents, Records, etc.)
-│   │   ├── components/             # Reusable UI components & dialogs
-│   │   ├── lib/api.js              # Full-stack API client with graceful offline fallback
-│   │   └── main.jsx
-│   ├── vite.config.js              # Proxy config: /api -> http://localhost:5000
-│   └── package.json
-│
-├── demo-accounts.json              # Reference student, faculty & admin credentials
-├── package.json                    # Root runner orchestrating concurrent execution
-└── Start TrustVault.bat            # 1-Click Windows full-stack launcher
+TrustVault-main/
+├── client/                  # React + Vite + Tailwind CSS frontend
+│   └── src/
+│       ├── components/      # UI kit, 3D Wallet, DocViewer, Layout
+│       ├── lib/             # API client, AuthProvider, utilities
+│       └── pages/           # Landing, Login/Register, Dashboard, Documents, Access, Shares, Activity, Security, Records, Admin
+├── server/                  # Node.js + Express + Mongoose backend
+│   ├── scripts/seed.js      # Database seeder
+│   └── src/
+│       ├── lib/             # crypto, auditLedger, activityLogger, otpStore, mailer, verify (OCR/checksums)
+│       ├── middleware/      # JWT authMiddleware & requireRole
+│       ├── models/          # User, Document, Audit, ActivityLog, OTP, AccessRequest, Share
+│       └── routes/          # auth, documents, records, access, shares, admin
+└── package.json             # Root scripts (dev, server, client, seed, build)
 ```
 
 ---
 
-## ⚡ 1-Click Demo Logins
+## Setup & Running Locally
 
-No manual typing required! Visit the **Sign In** screen and click any of the **1-Click Demo Login** buttons:
+### 1. Prerequisites
+- **Node.js** v18+
+- **MongoDB Atlas** cluster (or local MongoDB)
+- **Gmail App Password** (or SMTP credentials) in `server/.env` for Email OTP & ZIP delivery
 
-| Role | 1-Click Demo Button | Default Password | What You Can Test |
-| :--- | :--- | :--- | :--- |
-| **🎓 Student** | Click `🎓 Student` | `TrustVault@2026` | Upload identity/academic documents, view validation scores, approve faculty consent requests, manage vault PIN |
-| **👩‍🏫 Faculty** | Click `👩‍🏫 Faculty` | `TrustVault@2026` | Batch student search (`23MX`), request required certificates, review verified credentials, mark approvals |
-| **🛡️ Administrator** | Click `🛡️ Admin` | `TrustVault@2026` | Inspect institute-wide activity, verify SHA-256 tamper-evident ledger integrity, manage accounts |
+### 2. Configure Environment (`server/.env`)
+```env
+PORT=5000
+MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/trustvault?retryWrites=true&w=majority
+JWT_SECRET=your_32_plus_char_secret_key
+CLIENT_ORIGIN=http://localhost:5173
+NODE_ENV=development
 
-> **Vault PIN (all demo accounts):** `482915`
+SMTP_SERVICE=gmail
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_gmail_app_password
+SMTP_FROM="TrustVault Verification" <your_email@gmail.com>
+```
 
----
+> **MongoDB Atlas Network Access**: Make sure your current IP address (or `0.0.0.0/0` for development) is whitelisted in **Atlas → Security → Network Access** and that the cluster is active.
 
-## 🚀 How to Run the Project
+### 3. Install Dependencies
+```powershell
+npm install
+npm install --prefix server
+npm install --prefix client
+```
 
-### Option 1: 1-Click Windows Launcher (Easiest)
-Double-click `Start TrustVault.bat`. It will start both the Express backend and React frontend concurrently and open `http://localhost:5173` in your browser.
+### 4. Seed Initial Database (Admin, Sample Faculty & Student)
+```powershell
+npm run seed
+```
+Primary Admin created: `poojamatheshwaran6363@gmail.com`
 
-### Option 2: From Terminal / Command Prompt
-1. Run both frontend and backend concurrently:
-   ```bash
-   npm run dev
-   ```
-2. Or run each component individually:
-   - **Backend API only:**
-     ```bash
-     npm run server
-     ```
-     Runs on `http://localhost:5000/api`
-   - **Frontend only:**
-     ```bash
-     npm run client
-     ```
-     Runs on `http://localhost:5173`
-
----
-
-## 🗄️ MongoDB Setup & Seeding
-
-1. **MongoDB Connection**:
-   The backend connects to MongoDB via Mongoose using the connection string in `server/.env`:
-   ```env
-   PORT=5000
-   MONGO_URI=mongodb://127.0.0.1:27017/trustvault
-   JWT_SECRET=trustvault_super_secret_jwt_key_2026_secured
-   CLIENT_ORIGIN=http://localhost:5173
-   ```
-   *(You can also paste a MongoDB Atlas cloud URI into `MONGO_URI`)*.
-
-2. **Seed the Database with Demo Data**:
-   To pre-populate users, sample verified documents, consent requests, and initial blockchain ledger entries into MongoDB, run:
-   ```bash
-   npm run seed
-   ```
-
----
-
-## 🛡️ Core Technologies & Security Features
-
-- **Backend**: Node.js & Express.js
-- **Database**: MongoDB with Mongoose ODM
-- **Authentication**: JWT tokens with bcrypt password hashing
-- **Cryptographic Audit Ledger**: SHA-256 blockchain-style chaining (`prevHash` + `data` -> `hash`) with 1-click integrity verification
-- **Aadhaar Verification**: UIDAI-compliant Verhoeff checksum algorithm and digit masking
-- **PAN Verification**: Income Tax Department alphanumeric pattern recognition
-- **Frontend**: React 19, Vite, Tailwind CSS, Lucide Icons
-- **Fault-Tolerant Hybrid Sync**: Frontend calls the Express backend via `/api`; if MongoDB/backend is offline, it seamlessly falls back to self-contained demo storage without interruption.
+### 5. Run the Application
+```powershell
+npm run dev
+```
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:5000/api
+- **Health Check**: http://localhost:5000/api/health

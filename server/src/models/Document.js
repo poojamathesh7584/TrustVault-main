@@ -46,6 +46,10 @@ const DocumentSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    fileData: {
+      type: Buffer,
+      select: false
+    },
     status: {
       type: String,
       enum: ['verified', 'pending', 'rejected', 'stored'],
