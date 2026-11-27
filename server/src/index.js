@@ -31,10 +31,21 @@ const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://127.0.0.1:5173'
 ]);
+if (process.env.VERCEL_URL) {
+  allowedOrigins.add(`https://${process.env.VERCEL_URL}`);
+}
+if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+  allowedOrigins.add(`https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`);
+}
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+    if (
+      !origin ||
+      allowedOrigins.has(origin) ||
+      /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin)
+    ) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
@@ -77,6 +88,52 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: message });
 });
 
+let dbConnectPromise = null;
+
+async function ensureDbConnected() {
+  if (mongoose.connection.readyState === 1) return;
+  if (!dbConnectPromise) {
+    console.log('[TrustVault] Connecting to MongoDB...');
+    dbConnectPromise = mongoose.connect(config.mongoUri, {
+      serverSelectionTimeoutMS: 5000
+    }).then(async () => {
+      console.log('[TrustVault] MongoDB connection established successfully!');
+      try {
+        const User = require('./models/User');
+        const { hashPassword } = require('./lib/crypto');
+        const adminEmail = 'poojamatheshwaran6363@gmail.com';
+        const existingAdmin = await User.findOne({ email: adminEmail });
+        if (!existingAdmin) {
+          await User.create({
+            name: 'Pooja Matheshwaran',
+            email: adminEmail,
+            password: await hashPassword(process.env.ADMIN_INIT_PASSWORD || 'TrustVault@2026'),
+            role: 'admin',
+            roll: 'ADM-01',
+            dept: 'Central Examination & Verification Cell',
+            hasVaultPin: false
+          });
+          console.log(`[TrustVault] Primary admin ensured: ${adminEmail}`);
+        }
+      } catch (seedErr) {
+        console.warn('[TrustVault] Admin bootstrap check skipped:', seedErr.message);
+      }
+    }).catch((err) => {
+      dbConnectPromise = null;
+      console.warn(`[TrustVault] MongoDB connection failed: ${err.message}`);
+      console.warn('[TrustVault] Please ensure MongoDB service is running or configure MONGO_URI in server/.env');
+    });
+  }
+  return dbConnectPromise;
+}
+
+if (process.env.VERCEL) {
+  app.use('/api', async (req, res, next) => {
+    await ensureDbConnected();
+    next();
+  });
+}
+
 let currentServer = null;
 
 async function startServer(port = Number(config.port) || 5000) {
@@ -103,42 +160,13 @@ async function startServer(port = Number(config.port) || 5000) {
   process.once('SIGTERM', () => { try { server.close(); } catch {} });
   process.once('SIGINT', () => { try { server.close(); } catch {} });
 
-  try {
-    console.log(`[TrustVault] Connecting to MongoDB...`);
-    await mongoose.connect(config.mongoUri, {
-      serverSelectionTimeoutMS: 5000
-    });
-    console.log('[TrustVault] MongoDB connection established successfully!');
-
-    // Ensure primary administrator account exists
-    try {
-      const User = require('./models/User');
-      const { hashPassword } = require('./lib/crypto');
-      const adminEmail = 'poojamatheshwaran6363@gmail.com';
-      const existingAdmin = await User.findOne({ email: adminEmail });
-      if (!existingAdmin) {
-        await User.create({
-          name: 'Pooja Matheshwaran',
-          email: adminEmail,
-          password: await hashPassword(process.env.ADMIN_INIT_PASSWORD || 'TrustVault@2026'),
-          role: 'admin',
-          roll: 'ADM-01',
-          dept: 'Central Examination & Verification Cell',
-          hasVaultPin: false
-        });
-        console.log(`[TrustVault] Primary admin ensured: ${adminEmail}`);
-      }
-    } catch (seedErr) {
-      console.warn('[TrustVault] Admin bootstrap check skipped:', seedErr.message);
-    }
-  } catch (err) {
-    console.warn(`[TrustVault] MongoDB connection failed: ${err.message}`);
-    console.warn('[TrustVault] Please ensure MongoDB service is running or configure MONGO_URI in server/.env');
-  }
+  await ensureDbConnected();
 
   return server;
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 module.exports = app;
