@@ -227,7 +227,7 @@ async function sendWithFallback(mailOptions) {
       if (apiRes?.sent) return apiRes;
     } catch (apiErr) {
       console.error(`[TrustVault Mailer] HTTPS Email API failed: ${apiErr.message}`);
-      if (!authUser || !cleanPass) {
+      if (process.env.RENDER || !authUser || !cleanPass) {
         return { sent: false, mode: 'https-api', error: apiErr.message };
       }
     }
