@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -68,6 +70,16 @@ app.use('/api/access', accessRoutes);
 app.use('/api/shares', shareRoutes);
 app.use('/api/public/share', shareRoutes.publicRouter);
 app.use('/api/admin', adminRoutes);
+
+// Serve built React frontend in production (single-service Render deployment)
+const clientDistDir = path.join(__dirname, '..', '..', 'client', 'dist');
+if (fs.existsSync(clientDistDir)) {
+  app.use(express.static(clientDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(clientDistDir, 'index.html'));
+  });
+}
 
 // Global Error Handler — don't leak stack traces in production
 app.use((err, req, res, next) => {

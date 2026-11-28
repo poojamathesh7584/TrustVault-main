@@ -10,7 +10,8 @@
     "client": "npm run dev --prefix client",
     "seed": "node server/scripts/seed.js",
     "db:inspect": "node server/scripts/inspectDb.js",
-    "build": "npm run build --prefix client",
+    "build": "npm install --prefix server && npm install --prefix client && npm run build --prefix client",
+    "start": "npm start --prefix server",
     "preview": "npm run preview --prefix client"
   },
   "devDependencies": {
