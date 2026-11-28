@@ -132,7 +132,11 @@ export default function Login({ mode = 'login' }) {
         setOtp('');
         setResendCooldown(45);
         setStep(2);
-        toast(`6-digit verification code sent to ${res.email || cleanEmail}.`);
+        if (res.sent === false) {
+          setError(res.mailError || res.message || 'Email delivery failed. Check server SMTP configuration.');
+        } else {
+          toast(`6-digit verification code sent to ${res.email || cleanEmail}.`);
+        }
       } else if (res?.ok && res?.user) {
         toast(`Welcome back, ${res.user.name}!`);
         await refresh();

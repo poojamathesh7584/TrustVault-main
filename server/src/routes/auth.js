@@ -319,9 +319,10 @@ router.post('/login', async (req, res) => {
       email: user.email,
       role: user.role,
       sent: mailResult.sent,
+      mailError: mailResult.sent ? undefined : (mailResult.error || 'SMTP delivery failed'),
       message: mailResult.sent
         ? `A 6-digit verification code has been sent to ${user.email}.`
-        : `Verification code generated for ${user.email}. Check server logs or SMTP settings.`,
+        : `Could not send email to ${user.email}: ${mailResult.error || 'Check SMTP settings on the server.'}`,
       expiresIn: 600
     };
 
