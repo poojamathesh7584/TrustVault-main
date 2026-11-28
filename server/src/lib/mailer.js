@@ -144,21 +144,99 @@ function getTransporter() {
 }
 
 /**
- * Sends mail via primary Gmail SSL (465) with automatic fallback to STARTTLS (587)
+ * Sends mail via HTTPS Email API (Brevo or Resend) when configured, or Gmail SMTP (465/587)
  */
-async function sendWithFallback(mailOptions) {
-  const transporter = getTransporter();
-  if (!transporter) {
-    return { sent: false, mode: 'console', error: 'SMTP credentials not configured in server/.env' };
+async function sendViaHttpsApi(envelopeOptions) {
+  const fromRaw = envelopeOptions.from || process.env.SMTP_FROM?.trim() || process.env.SMTP_USER?.trim() || 'no-reply@trustvault.app';
+  const fromMatch = fromRaw.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);
+  const senderName = fromMatch ? (fromMatch[1] || 'TrustVault').trim() : 'TrustVault';
+  const senderEmail = fromMatch ? fromMatch[2].trim() : fromRaw.trim();
+
+  // 1. Brevo Transactional Email API (HTTPS port 443 - works on Render Free tier)
+  const brevoKey = process.env.BREVO_API_KEY?.trim();
+  if (brevoKey) {
+    const payload = {
+      sender: { name: senderName, email: senderEmail },
+      to: [{ email: envelopeOptions.to }],
+      subject: envelopeOptions.subject,
+      htmlContent: envelopeOptions.html,
+      textContent: envelopeOptions.text
+    };
+    if (Array.isArray(envelopeOptions.attachments) && envelopeOptions.attachments.length > 0) {
+      payload.attachment = envelopeOptions.attachments.map((a) => ({
+        name: a.filename,
+        content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : Buffer.from(a.content).toString('base64')
+      }));
+    }
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || `Brevo API error (${res.status})`);
+    }
+    return { sent: true, mode: 'brevo-https', messageId: data.messageId || 'brevo' };
   }
 
+  // 2. Resend Email API (HTTPS port 443 - works on Render Free tier)
+  const resendKey = process.env.RESEND_API_KEY?.trim();
+  if (resendKey) {
+    const payload = {
+      from: process.env.RESEND_FROM?.trim() || fromRaw,
+      to: [envelopeOptions.to],
+      subject: envelopeOptions.subject,
+      html: envelopeOptions.html,
+      text: envelopeOptions.text
+    };
+    if (Array.isArray(envelopeOptions.attachments) && envelopeOptions.attachments.length > 0) {
+      payload.attachments = envelopeOptions.attachments.map((a) => ({
+        filename: a.filename,
+        content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : Buffer.from(a.content).toString('base64')
+      }));
+    }
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || `Resend API error (${res.status})`);
+    }
+    return { sent: true, mode: 'resend-https', messageId: data.id || 'resend' };
+  }
+
+  return null;
+}
+
+async function sendWithFallback(mailOptions) {
   const authUser = (process.env.SMTP_USER || '').trim();
   const cleanPass = (process.env.SMTP_PASS || '').trim().replace(/\s+/g, '');
   const envelopeOptions = {
     ...mailOptions,
     from: mailOptions.from || process.env.SMTP_FROM?.trim() || authUser,
-    replyTo: authUser
+    replyTo: authUser || undefined
   };
+
+  // Prefer HTTPS email API if configured (bypasses Render Free tier SMTP port blocks)
+  if (process.env.BREVO_API_KEY?.trim() || process.env.RESEND_API_KEY?.trim()) {
+    try {
+      const apiRes = await sendViaHttpsApi(envelopeOptions);
+      if (apiRes?.sent) return apiRes;
+    } catch (apiErr) {
+      console.error(`[TrustVault Mailer] HTTPS Email API failed: ${apiErr.message}`);
+      if (!authUser || !cleanPass) {
+        return { sent: false, mode: 'https-api', error: apiErr.message };
+      }
+    }
+  }
+
+  const transporter = getTransporter();
+  if (!transporter) {
+    return { sent: false, mode: 'console', error: 'SMTP / Email API credentials not configured on server' };
+  }
 
   try {
     const info = await transporter.sendMail(envelopeOptions);
