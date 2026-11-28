@@ -43,7 +43,7 @@ export function StatusDonut({ docs }) {
 export function ActivityLine({ activity, days = 14 }) {
   const id = useId().replace(/:/g, '');
   const dates = Array.from({ length: days }, (_, i) => new Date(Date.now() - (days - 1 - i) * 864e5));
-  const counts = dates.map((d) => activity.filter((a) => new Date(a.createdAt).toDateString() === d.toDateString()).length);
+  const counts = dates.map((d) => activity.filter((a) => new Date(a.createdAt || a.at).toDateString() === d.toDateString()).length);
   const peak = Math.max(1, ...counts);
   const W = 300, H = 96, pad = 6;
   const pts = counts.map((n, i) => [pad + (i * (W - pad * 2)) / (days - 1), H - pad - (n / peak) * (H - pad * 2)]);

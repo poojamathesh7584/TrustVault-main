@@ -338,25 +338,7 @@ function Invites() {
         </form>
       </Card>
       <div className="grid gap-3">
-        {editUser && (
-        <Card className="border-primary/40 bg-card">
-          <CardHeader>
-            <CardTitle>Update Details for {editUser.name}</CardTitle>
-            <CardDescription>{editUser.email} ({ROLE_LABELS[editUser.role] || editUser.role})</CardDescription>
-          </CardHeader>
-          <form className="grid gap-3 sm:grid-cols-3" onSubmit={saveEdit}>
-            <Field label="Full Name"><Input value={editName} onChange={(e) => setEditName(e.target.value)} required /></Field>
-            <Field label="Roll / Staff ID"><Input value={editRoll} onChange={(e) => setEditRoll(e.target.value.toUpperCase())} className="font-mono uppercase" /></Field>
-            <Field label="Department"><Input value={editDept} onChange={(e) => setEditDept(e.target.value)} /></Field>
-            <div className="sm:col-span-3 flex gap-2 justify-end">
-              <Button type="button" variant="ghost" onClick={() => setEditUser(null)}>Cancel</Button>
-              <Button type="submit">Save Changes</Button>
-            </div>
-          </form>
-        </Card>
-      )}
-
-      <ErrorText>{error}</ErrorText>
+        <ErrorText>{error}</ErrorText>
         {data && !data.length && <EmptyState icon={MailPlus} title="No invitations yet" steps={[[MailPlus, 'Enter their email and pick faculty or admin'], [Link2, 'They get a one-time link that works only for that address'], [Check, 'They set a password and Google Authenticator, then appear in Users']]}>
           Bring in a faculty member or another admin without them needing a sign-up code.
         </EmptyState>}
@@ -398,15 +380,15 @@ function Ledger() {
           <p className="flex items-center gap-2 font-semibold">
             {result.ok ? <><CheckCircle2 className="size-4" /> All {result.blocks} blocks and {result.documents} documents are intact.</> : <><XCircle className="size-4" /> {result.problems.length} problem(s) found:</>}
           </p>
-          {!result.ok && <ul className="mt-2 grid list-disc gap-1 pl-5">{result.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
+          {!result.ok && <ul className="mt-2 grid list-disc gap-1 pl-5">{result.problems.map((p, idx) => <li key={idx}>{typeof p === 'string' ? p : (p?.reason || `Block #${p?.index ?? idx} integrity mismatch`)}</li>)}</ul>}
         </Callout>
       )}
       <Table>
         <TableHeader><TableRow><TableHead>#</TableHead><TableHead>Time</TableHead><TableHead>Action</TableHead><TableHead>File hash</TableHead><TableHead>Previous hash</TableHead><TableHead>Block hash</TableHead></TableRow></TableHeader>
         <TableBody>
           {data?.map((b) => (
-            <TableRow key={b._id}>
-              <TableCell className="font-mono">{b.index}</TableCell><TableCell className="whitespace-nowrap">{fmtDate(b.at)}</TableCell><TableCell>{b.action}</TableCell>
+            <TableRow key={b._id || b.index}>
+              <TableCell className="font-mono">{b.index}</TableCell><TableCell className="whitespace-nowrap">{fmtDate(b.at || b.timestamp)}</TableCell><TableCell>{actionLabel(b.action)}</TableCell>
               {hash(b.fileHash)}{hash(b.prevHash)}{hash(b.hash)}
             </TableRow>
           ))}
@@ -417,9 +399,13 @@ function Ledger() {
 }
 
 // ---------- Audit log: filter by kind, search, export what is shown as CSV ----------
+const normAct = (a) => String(a || '').toLowerCase().replace(/_/g, '.');
 const KINDS = [
-  ['all', 'Everything', () => true], ['signin', 'Sign-ins', (a) => /^login|^session|^devices/.test(a)], ['docs', 'Documents', (a) => /^document/.test(a)],
-  ['access', 'Access & sharing', (a) => /^(record|access|share)/.test(a)], ['admin', 'Admin actions', (a) => /^(user|invite|ledger)/.test(a)],
+  ['all', 'Everything', () => true],
+  ['signin', 'Sign-ins', (a) => /^(login|session|devices|student\.register|otp|reauth)/.test(normAct(a))],
+  ['docs', 'Documents', (a) => /^document/.test(normAct(a))],
+  ['access', 'Access & sharing', (a) => /^(record|access|share|faculty)/.test(normAct(a))],
+  ['admin', 'Admin actions', (a) => /^(user|invite|ledger|admin|account\.locked)/.test(normAct(a))],
 ];
 const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 
@@ -434,7 +420,7 @@ function AllAudit() {
     return logs.filter((a) => test(a.action) && (!needle || `${actionLabel(a.action)} ${a.detail} ${a.user?.name ?? ''} ${a.subject?.name ?? ''} ${a.ip}`.toLowerCase().includes(needle)));
   }, [logs, kind, q]);
   const exportCsv = () => {
-    const rows = [['Time', 'Action', 'Details', 'By', 'Role', 'Whose data', 'IP'], ...shown.map((a) => [new Date(a.createdAt).toISOString(), actionLabel(a.action), cleanDetail(a.detail), a.user?.name ?? 'system / guest', a.user?.role ?? '', a.subject?.name ?? '', a.ip])];
+    const rows = [['Time', 'Action', 'Details', 'By', 'Role', 'Whose data', 'IP'], ...shown.map((a) => [new Date(a.createdAt || a.at).toISOString(), actionLabel(a.action), cleanDetail(a.detail), a.user?.name ?? 'system / guest', a.user?.role ?? '', a.subject?.name ?? '', a.ip])];
     const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
     Object.assign(document.createElement('a'), { href: url, download: `trustvault-audit-${new Date().toISOString().slice(0, 10)}.csv` }).click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -473,23 +459,6 @@ function Requests() {
         <Segmented label="Filter requests" value={filter} onChange={setFilter} options={REQ_FILTERS.map(([k, label]) => [k, label, all.filter((a) => k === 'all' || a.status === k).length])} />
         <SearchBox value={q} onChange={setQ} placeholder="Search faculty, student or roll number…" label="Search requests" />
       </div>
-      {editUser && (
-        <Card className="border-primary/40 bg-card">
-          <CardHeader>
-            <CardTitle>Update Details for {editUser.name}</CardTitle>
-            <CardDescription>{editUser.email} ({ROLE_LABELS[editUser.role] || editUser.role})</CardDescription>
-          </CardHeader>
-          <form className="grid gap-3 sm:grid-cols-3" onSubmit={saveEdit}>
-            <Field label="Full Name"><Input value={editName} onChange={(e) => setEditName(e.target.value)} required /></Field>
-            <Field label="Roll / Staff ID"><Input value={editRoll} onChange={(e) => setEditRoll(e.target.value.toUpperCase())} className="font-mono uppercase" /></Field>
-            <Field label="Department"><Input value={editDept} onChange={(e) => setEditDept(e.target.value)} /></Field>
-            <div className="sm:col-span-3 flex gap-2 justify-end">
-              <Button type="button" variant="ghost" onClick={() => setEditUser(null)}>Cancel</Button>
-              <Button type="submit">Save Changes</Button>
-            </div>
-          </form>
-        </Card>
-      )}
 
       <ErrorText>{error}</ErrorText>
       {loading ? <SkeletonRows /> : (

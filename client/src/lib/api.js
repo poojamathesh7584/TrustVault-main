@@ -794,13 +794,13 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
 
     // If backend returned a JSON error (4xx or 5xx, except 401 on /auth/me), throw that message
     const contentType = response.headers.get('content-type') || '';
-    if (response.status === 401 && urlPath !== '/auth/login' && urlPath !== '/auth/otp/verify' && urlPath !== '/auth/login/totp') {
+    if (response.status === 401 && urlPath !== '/auth/me' && urlPath !== '/auth/login' && urlPath !== '/auth/otp/verify' && urlPath !== '/auth/login/totp' && !urlPath.startsWith('/auth/step-up/')) {
       if (loadStore('token', null)) {
         saveStore('token', null);
         window.dispatchEvent(new Event('session-expired'));
       }
     }
-    if (urlPath !== '/auth/me' && response.status !== 401 && contentType.includes('application/json')) {
+    if (urlPath !== '/auth/me' && contentType.includes('application/json')) {
       const errData = await response.json().catch(() => ({}));
       if (errData.error || errData.message) {
         const err = new Error(errData.error || errData.message);
@@ -809,7 +809,7 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
       }
     }
   } catch (err) {
-    if (err.status && err.status !== 401) {
+    if (err.status) {
       throw err;
     }
   }
@@ -1619,7 +1619,7 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
     saveStore('access_requests', [newReq, ...existingReqs]);
     return { ok: true, request: newReq, message: 'Document access request sent to student.' };
   }
-  if (urlPath === '/records/batch-request' && m === 'POST') {
+  if ((urlPath === '/records/request-batch' || urlPath === '/records/batch-request') && m === 'POST') {
     const targetBatch = (body?.group || body?.batch || 'ALL').toUpperCase();
     const students = getStudentDirectory().filter((s) => {
       const b = (s.batch || extractBatch(s.roll || s.studentId, '26MX')).toUpperCase();
@@ -1627,39 +1627,53 @@ export async function api(path, { method = 'GET', body, form, raw } = {}) {
     });
     const active = getActiveUser();
     const types = Array.isArray(body?.types) && body.types.length ? body.types : ['aadhaar', 'pan'];
+    const cleanReason = String(body?.reason || '').trim() || `Batch ${targetBatch} verification drive`;
     const existingReqs = loadStore('access_requests', []);
-    const created = students.map((student, idx) => ({
-      id: `acc_req_${Date.now()}_${idx}`,
-      verifier: {
-        name: active?.name || 'Dr. Priya Raman',
-        email: active?.email || 'priya.raman@trustvault.demo',
-        role: 'verifier',
-        dept: active?.dept || 'Department of Computer Applications',
-      },
-      faculty: {
-        name: active?.name || 'Dr. Priya Raman',
-        email: active?.email || 'priya.raman@trustvault.demo',
-      },
-      student: {
-        id: student.id,
-        name: student.name,
-        email: student.email,
-        studentId: student.studentId || student.roll,
-        roll: student.roll || student.studentId,
-      },
-      targetEmail: (student.email || '').toLowerCase(),
-      targetRoll: (student.roll || student.studentId || '').toUpperCase(),
-      types,
-      granted: [],
-      reason: body?.reason || `Batch ${targetBatch} verification drive`,
-      status: 'pending',
-      requestedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 86400000 * 7).toISOString(),
-      opened: 0,
-    }));
+    let skipped = 0;
+    const created = [];
+    students.forEach((student, idx) => {
+      const alreadyWaiting = existingReqs.some((r) =>
+        r.status === 'pending' &&
+        (r.student?.id === student.id || r.targetEmail === (student.email || '').toLowerCase()) &&
+        (r.faculty?.email || r.verifier?.email) === (active?.email || 'priya.raman@trustvault.demo')
+      );
+      if (alreadyWaiting) {
+        skipped++;
+        return;
+      }
+      created.push({
+        id: `acc_req_${Date.now()}_${idx}`,
+        verifier: {
+          name: active?.name || 'Dr. Priya Raman',
+          email: active?.email || 'priya.raman@trustvault.demo',
+          role: 'verifier',
+          dept: active?.dept || 'Department of Computer Applications',
+        },
+        faculty: {
+          name: active?.name || 'Dr. Priya Raman',
+          email: active?.email || 'priya.raman@trustvault.demo',
+        },
+        student: {
+          id: student.id,
+          name: student.name,
+          email: student.email,
+          studentId: student.studentId || student.roll,
+          roll: student.roll || student.studentId,
+        },
+        targetEmail: (student.email || '').toLowerCase(),
+        targetRoll: (student.roll || student.studentId || '').toUpperCase(),
+        types,
+        granted: [],
+        reason: cleanReason,
+        status: 'pending',
+        requestedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+        opened: 0,
+      });
+    });
     saveStore('access_requests', [...created, ...existingReqs]);
-    return { ok: true, sent: created.length, skipped: 0, group: targetBatch, count: created.length };
+    return { ok: true, sent: created.length, skipped, group: targetBatch, count: created.length };
   }
   // Faculty Request by Email or Roll to Any Student
   if (urlPath === '/records/request-by-email' && m === 'POST') {
@@ -2022,10 +2036,25 @@ const ACTIONS = {
   'invite.create': 'Invitation sent',
   'invite.revoke': 'Invitation cancelled',
   'invite.accept': 'Invitation accepted',
+  'login.otp': 'Signed in (Email OTP)',
+  'login.password': 'Signed in (Password)',
+  'student.register': 'Account created',
+  'vault.pin.updated': 'Vault PIN updated',
+  'vault.unlocked': 'Vault unlocked',
+  'vault.unlock.failed': 'Failed vault unlock',
+  'stepup.otp.failed': 'Security check failed',
+  'access.request.batch': 'Batch access requested',
+  'admin.unlock': 'Account unlocked by admin',
   'ledger.check': 'Integrity check run',
 };
 
-export const actionLabel = (code) => ACTIONS[code] ?? code;
+export const actionLabel = (code) => {
+  if (!code) return '';
+  if (ACTIONS[code]) return ACTIONS[code];
+  const normalized = String(code).toLowerCase().replace(/_/g, '.');
+  if (ACTIONS[normalized]) return ACTIONS[normalized];
+  return String(code).replace(/[_./]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+};
 export const cleanDetail = (s = '') => s.replace(' | ', ' · ').replace(/^(.+?) \((.+)\)$/, (m, a, b) => (b.startsWith(a) ? a + b.slice(a.length) : m));
 
 export const SECTIONS = [

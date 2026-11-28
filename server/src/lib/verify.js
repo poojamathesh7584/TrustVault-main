@@ -131,27 +131,33 @@ const TYPE_POSITIVE_KEYWORDS = {
   certificate: ['certificate', 'cert', 'bonafide', 'bonafied', 'degree', 'diploma', 'provisional', 'course']
 };
 
-const TYPE_MISMATCH_KEYWORDS = {
-  pan: ['pan card', 'pancard', 'pan_card', 'pan-card', 'income tax', 'permanent account'],
-  aadhaar: ['aadhaar', 'aadhar', 'adhar', 'uidai', 'unique identification'],
-  license: ['driving license', 'driving licence', 'driving_license', 'driving-licence', 'parivahan', 'transport department'],
-  class10: ['10th', 'tenth', 'sslc', 'class 10', 'class10'],
-  class12: ['12th', 'twelfth', 'hsc', 'class 12', 'class12'],
-  marksheet: ['marksheet', 'mark sheet', 'semester marksheet'],
-  certificate: ['bonafide', 'degree certificate', 'provisional certificate']
+const TYPE_MISMATCH_PATTERNS = {
+  pan: [/\bpan card\b/i, /\bpancard\b/i, /\bpan[_-]card\b/i, /\bincome tax department\b/i, /\bpermanent account number\b/i],
+  aadhaar: [/\baadhaar\b/i, /\baadhar\b/i, /\buidai\b/i, /\bunique identification authority\b/i],
+  license: [/\bdriving licen[cs]e\b/i, /\bdriving[_-]licen[cs]e\b/i, /\bparivahan\b/i, /\btransport department\b/i],
+  class10: [/\b10th\s+(?:marksheet|mark\s*sheet|std|class|board|result|certificate)\b/i, /\bclass\s*10\b/i, /\bsslc\b/i],
+  class12: [/\b12th\s+(?:marksheet|mark\s*sheet|std|class|board|result|certificate)\b/i, /\bclass\s*12\b/i, /\bhsc\s+(?:marksheet|board|examination|certificate)\b/i],
+  marksheet: [/\bsemester\s+marksheet\b/i, /\bgrade\s+card\b/i],
+  certificate: [/\bbonafide\s+certificate\b/i, /\bdegree\s+certificate\b/i, /\bprovisional\s+certificate\b/i]
 };
 
 function matchesDocType(cleanType, fileName, bufferStr) {
   const haystack = `${fileName} ${bufferStr}`.toLowerCase();
+  // If the document or filename already contains positive markers for the selected type, do not false-flag a mismatch
+  const ownPositive = TYPE_POSITIVE_KEYWORDS[cleanType] || [];
+  if (ownPositive.some((k) => haystack.includes(k))) {
+    return { ok: true, mismatched: null };
+  }
+
   // Reject explicit mismatch with another document type using unambiguous phrases
-  for (const [otherType, kws] of Object.entries(TYPE_MISMATCH_KEYWORDS)) {
+  for (const [otherType, patterns] of Object.entries(TYPE_MISMATCH_PATTERNS)) {
     if (otherType === cleanType) continue;
     if (['class10', 'class12', 'marksheet'].includes(cleanType) && ['class10', 'class12', 'marksheet'].includes(otherType)) {
-      if (cleanType === 'class10' && ['12th', 'twelfth', 'hsc', 'class 12', 'class12'].some((k) => haystack.includes(k))) return { ok: false, mismatched: otherType };
-      if (cleanType === 'class12' && ['10th', 'tenth', 'sslc', 'class 10', 'class10'].some((k) => haystack.includes(k))) return { ok: false, mismatched: otherType };
+      if (cleanType === 'class10' && TYPE_MISMATCH_PATTERNS.class12.some((rx) => rx.test(haystack))) return { ok: false, mismatched: otherType };
+      if (cleanType === 'class12' && TYPE_MISMATCH_PATTERNS.class10.some((rx) => rx.test(haystack))) return { ok: false, mismatched: otherType };
       continue;
     }
-    if (kws.some((k) => haystack.includes(k))) {
+    if (patterns.some((rx) => rx.test(haystack))) {
       return { ok: false, mismatched: otherType };
     }
   }
@@ -244,7 +250,7 @@ async function runTesseractOcr(imageBuffer) {
     };
     let timer;
     const timeoutPromise = new Promise((resolve) => {
-      timer = setTimeout(() => resolve(''), 15000);
+      timer = setTimeout(() => resolve(''), 25000);
       if (timer.unref) timer.unref();
     });
     const text = await Promise.race([runOcr(), timeoutPromise]);
@@ -412,7 +418,7 @@ async function verifyDocumentUpload({ type, number, fileBuffer, originalName, mi
   // 2. Official Header Keywords & OCR/PDF Content Check
   let hasKeywords = false;
   let keywordDetail = '';
-  const typeMatch = matchesDocType(cleanType, fileName, bufferStr);
+  const typeMatch = matchesDocType(cleanType, fileName, `${bufferStr} ${extractedLower}`);
   const expectedOcrKws = OCR_EXPECTED_KEYWORDS[cleanType];
   const ocrMatched = !expectedOcrKws || (hasReadableText && expectedOcrKws.some((k) => {
     if (extractedLower.includes(k)) return true;

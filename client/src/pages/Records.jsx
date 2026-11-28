@@ -303,9 +303,9 @@ export function StudentList() {
         )}
       </section>
 
-      {batch !== 'ALL' && list.length > 0 && !query
-        ? <BatchRequest group={batch} count={list.length} onSent={reload} />
-        : <Callout tone="info" className="flex items-center gap-2"><Users className="size-4 shrink-0" /> Pick a batch above to ask all of its students for documents at once.</Callout>}
+      {list.length > 0 && !query && (
+        <BatchRequest group={batch} count={list.length} onSent={reload} />
+      )}
     </div>
   );
 }
@@ -435,8 +435,8 @@ function BatchRequest({ group, count, onSent }) {
   return (
     <Card className="rc-ask">
       <form className="grid gap-4" onSubmit={send}>
-        <h2 className="flex items-center gap-2 text-xl"><Users className="size-5" /> Ask all {count} students in <span className="font-mono tracking-wider text-primary">{group}</span></h2>
-        <p className="text-sm text-muted-foreground">Tick the documents you need. Every student in {group} gets the request and decides for themselves. Students who already have a request from you waiting are skipped.</p>
+        <h2 className="flex items-center gap-2 text-xl"><Users className="size-5" /> Ask all {count} students in <span className="font-mono tracking-wider text-primary">{group === 'ALL' ? 'all batches' : group}</span></h2>
+        <p className="text-sm text-muted-foreground">Tick the documents you need. Every student {group === 'ALL' ? 'across all batches' : `in ${group}`} gets the request and decides for themselves. Students who already have a request from you waiting are skipped.</p>
         <div className="flex flex-wrap gap-2" role="group" aria-label="Documents to ask for">
           {REQUESTABLE.map((t) => {
             const on = picked.includes(t);
@@ -452,7 +452,7 @@ function BatchRequest({ group, count, onSent }) {
         <Field label="Reason (optional)"><Input name="reason" maxLength={300} placeholder="e.g. Documents for the TCS placement drive" /></Field>
         <ErrorText>{error}</ErrorText>
         <Button className="justify-self-start" disabled={busy || !picked.length}>
-          {busy ? 'Sending…' : picked.length ? `Send to all ${count} students in ${group}` : 'Tick at least one document'}
+          {busy ? 'Sending…' : picked.length ? `Send to all ${count} students${group === 'ALL' ? '' : ` in ${group}`}` : 'Tick at least one document'}
         </Button>
       </form>
     </Card>

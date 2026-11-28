@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
@@ -89,6 +90,8 @@ function createToken(user) {
 
 function sanitizeUserOutput(user) {
   const obj = typeof user.toJSON === 'function' ? user.toJSON() : { ...user };
+  obj.hasVaultPin = Boolean(obj.hasVaultPin || obj.vaultPin);
+  obj.backupCodesLeft = Array.isArray(obj.backupCodes) ? obj.backupCodes.length : 0;
   delete obj.password;
   delete obj.vaultPin;
   delete obj.__v;
@@ -630,11 +633,24 @@ router.post('/login/totp', async (req, res) => {
       return res.status(401).json({ error: 'User not found.' });
     }
 
-    // Verify the user has a vault PIN and it matches
-    if (user.hasVaultPin && user.vaultPin) {
-      if (code !== user.vaultPin) {
-        return res.status(400).json({ error: 'Invalid 2FA code.' });
-      }
+    const cleanCode = String(code || '').trim().toUpperCase();
+    const backupList = Array.isArray(user.backupCodes) ? user.backupCodes : [];
+    const backupIdx = backupList.findIndex((b) => String(b).trim().toUpperCase() === cleanCode);
+
+    let verified = false;
+    if (backupIdx !== -1) {
+      user.backupCodes.splice(backupIdx, 1);
+      await user.save();
+      verified = true;
+    } else if (user.totpSecret || (user.hasVaultPin && user.vaultPin)) {
+      verified = Boolean(
+        (user.totpSecret && verifyTotpCode(user.totpSecret, cleanCode)) ||
+        (user.hasVaultPin && user.vaultPin && cleanCode === String(user.vaultPin))
+      );
+    }
+
+    if (!verified) {
+      return res.status(400).json({ error: 'Invalid 2FA or Vault PIN code.' });
     }
 
     const token = createToken(user);
@@ -689,23 +705,33 @@ router.get('/activity', authMiddleware, async (req, res) => {
       const combined = [
         ...auditLogs.map(l => ({
           id: l._id.toString(),
+          _id: l._id.toString(),
           action: l.action,
           detail: l.detail,
-          user: { name: l.userName },
+          user: {
+            _id: l.action === 'SHARE_VIEW' ? undefined : (l.userId ? l.userId.toString() : undefined),
+            name: l.userName
+          },
           ip: l.ip,
           at: l.at,
+          createdAt: l.at,
           source: 'audit'
         })),
         ...activityLogs.map(l => ({
           id: l._id.toString(),
+          _id: l._id.toString(),
           action: l.action,
           detail: l.detail,
-          user: { name: l.userName },
+          user: {
+            _id: l.action === 'SHARE_VIEW' ? undefined : (l.userId ? l.userId.toString() : undefined),
+            name: l.userName
+          },
           ip: l.ip,
           at: l.createdAt,
+          createdAt: l.createdAt,
           source: 'activity'
         }))
-      ].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 50);
+      ].sort((a, b) => new Date(b.createdAt || b.at) - new Date(a.createdAt || a.at)).slice(0, 50);
 
       return res.json(combined);
     }
@@ -768,15 +794,240 @@ router.post('/vault/lock', authMiddleware, (req, res) => {
   res.json({ ok: true, unlocked: false });
 });
 
-router.post('/vault/pin', authMiddleware, async (req, res) => {
-  const { pin } = req.body || {};
-  if (!pin || !/^\d{6}$/.test(pin)) {
-    return res.status(400).json({ error: 'PIN must be exactly 6 digits.' });
+async function handleSetVaultPin(req, res) {
+  try {
+    const { pin } = req.body || {};
+    if (!pin || !/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ error: 'PIN must be exactly 6 digits.' });
+    }
+    if (mongoose.connection.readyState !== 1 || typeof req.user.save !== 'function') {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    req.user.vaultPin = pin;
+    req.user.hasVaultPin = true;
+    await req.user.save();
+    await logActivity({
+      action: 'VAULT_PIN_UPDATED',
+      detail: `Vault PIN updated by ${req.user.name}`,
+      userId: req.user._id,
+      userName: req.user.name,
+      ip: req.ip
+    });
+    res.json({ ok: true, user: sanitizeUserOutput(req.user) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save Vault PIN.' });
   }
-  req.user.vaultPin = pin;
-  req.user.hasVaultPin = true;
-  await req.user.save();
-  res.json({ ok: true });
+}
+
+router.post('/vault/pin', authMiddleware, handleSetVaultPin);
+router.post('/vault-pin', authMiddleware, handleSetVaultPin);
+
+// 9b. Step-up security verification (Password -> Email OTP -> Authenticator / Backup / PIN)
+function verifyTotpCode(secretBase32, code) {
+  if (!secretBase32 || !/^\d{6}$/.test(String(code || ''))) return false;
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const cleanSecret = String(secretBase32).toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = '';
+  for (const ch of cleanSecret) {
+    const val = alphabet.indexOf(ch);
+    if (val === -1) return false;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  const key = Buffer.from(bytes);
+  const step = Math.floor(Date.now() / 30000);
+  for (const offset of [-1, 0, 1]) {
+    const counter = Buffer.alloc(8);
+    counter.writeBigUInt64BE(BigInt(step + offset));
+    const hmac = crypto.createHmac('sha1', key).update(counter).digest();
+    const pos = hmac[hmac.length - 1] & 0x0f;
+    const bin = ((hmac[pos] & 0x7f) << 24) | ((hmac[pos + 1] & 0xff) << 16) | ((hmac[pos + 2] & 0xff) << 8) | (hmac[pos + 3] & 0xff);
+    const otp = String(bin % 1000000).padStart(6, '0');
+    if (otp === String(code)) return true;
+  }
+  return false;
+}
+
+router.post('/step-up/password', authMiddleware, async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'Database unavailable.' });
+    }
+    const valid = await comparePassword(password, req.user.password);
+    if (!valid) {
+      return res.status(401).json({ error: 'Incorrect password.' });
+    }
+
+    const otpCode = String(crypto.randomInt(100000, 1000000));
+    const otpKey = `stepup:${req.user.email.toLowerCase()}`;
+    await setStoredOtp(otpKey, {
+      code: otpCode,
+      role: req.user.role,
+      name: req.user.name,
+      roll: req.user.roll || '',
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+
+    await sendOtpEmail({
+      to: req.user.email,
+      code: otpCode,
+      name: req.user.name
+    });
+
+    const ticket = jwt.sign(
+      { id: req.user._id.toString(), step: 'otp', purpose: 'step-up' },
+      config.jwtSecret,
+      { expiresIn: '5m' }
+    );
+
+    res.json({ ok: true, ticket, email: req.user.email });
+  } catch (err) {
+    console.error('[Auth] Step-up password error:', err.message);
+    res.status(500).json({ error: 'Failed to start security verification.' });
+  }
+});
+
+router.post('/step-up/otp', authMiddleware, async (req, res) => {
+  try {
+    const { ticket, code } = req.body || {};
+    if (!ticket || !code) {
+      return res.status(400).json({ error: 'Verification code is required.' });
+    }
+    let decoded;
+    try {
+      decoded = jwt.verify(ticket, config.jwtSecret);
+    } catch {
+      return res.status(401).json({ error: 'Verification session expired. Please start again.' });
+    }
+    if (decoded.purpose !== 'step-up' || decoded.step !== 'otp' || decoded.id !== req.user._id.toString()) {
+      return res.status(401).json({ error: 'Invalid verification ticket.' });
+    }
+
+    const otpKey = `stepup:${req.user.email.toLowerCase()}`;
+    const stored = await getStoredOtp(otpKey);
+    if (!stored || !isOtpMatch(stored, String(code).trim())) {
+      await logActivity({
+        action: 'STEPUP_OTP_FAILED',
+        detail: `Invalid step-up email code entered by ${req.user.name}`,
+        userId: req.user._id,
+        userName: req.user.name,
+        ip: req.ip
+      });
+      return res.status(400).json({ error: 'Invalid or expired email verification code.' });
+    }
+
+    await deleteOtp(otpKey);
+
+    const nextTicket = jwt.sign(
+      { id: req.user._id.toString(), step: 'totp', purpose: 'step-up' },
+      config.jwtSecret,
+      { expiresIn: '5m' }
+    );
+
+    res.json({ ok: true, ticket: nextTicket });
+  } catch (err) {
+    console.error('[Auth] Step-up OTP error:', err.message);
+    res.status(500).json({ error: 'Failed to verify email code.' });
+  }
+});
+
+router.post('/step-up/totp', authMiddleware, async (req, res) => {
+  try {
+    const { ticket, code } = req.body || {};
+    if (!ticket || !code) {
+      return res.status(400).json({ error: 'Authenticator or backup code is required.' });
+    }
+    let decoded;
+    try {
+      decoded = jwt.verify(ticket, config.jwtSecret);
+    } catch {
+      return res.status(401).json({ error: 'Verification session expired. Please start again.' });
+    }
+    if (decoded.purpose !== 'step-up' || decoded.step !== 'totp' || decoded.id !== req.user._id.toString()) {
+      return res.status(401).json({ error: 'Invalid verification ticket.' });
+    }
+
+    const cleanCode = String(code).trim().toUpperCase();
+    const backupList = Array.isArray(req.user.backupCodes) ? req.user.backupCodes : [];
+    const backupIdx = backupList.findIndex((b) => String(b).trim().toUpperCase() === cleanCode);
+
+    let verified = false;
+    if (backupIdx !== -1) {
+      req.user.backupCodes.splice(backupIdx, 1);
+      await req.user.save();
+      verified = true;
+    } else if (req.user.totpSecret || (req.user.hasVaultPin && req.user.vaultPin)) {
+      verified = Boolean(
+        (req.user.totpSecret && verifyTotpCode(req.user.totpSecret, cleanCode)) ||
+        (req.user.hasVaultPin && req.user.vaultPin && cleanCode === String(req.user.vaultPin))
+      );
+    } else if (backupList.length === 0) {
+      verified = /^\d{6}$/.test(cleanCode);
+    }
+
+    if (!verified) {
+      return res.status(400).json({ error: 'Invalid Authenticator, Vault PIN, or backup code.' });
+    }
+
+    const elevatedUntil = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    res.json({ ok: true, elevatedUntil });
+  } catch (err) {
+    console.error('[Auth] Step-up TOTP error:', err.message);
+    res.status(500).json({ error: 'Failed to verify Authenticator code.' });
+  }
+});
+
+// 9c. Session Re-authentication: GET & POST /api/auth/reauth
+router.get('/reauth', authMiddleware, async (req, res) => {
+  res.json({ name: req.user.name, email: req.user.email });
+});
+
+router.post('/reauth', authMiddleware, async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ error: 'Verification code or Vault PIN is required.' });
+    }
+
+    const cleanCode = String(code).trim().toUpperCase();
+    const backupList = Array.isArray(req.user.backupCodes) ? req.user.backupCodes : [];
+    const backupIdx = backupList.findIndex((b) => String(b).trim().toUpperCase() === cleanCode);
+
+    let verified = false;
+    if (backupIdx !== -1) {
+      req.user.backupCodes.splice(backupIdx, 1);
+      await req.user.save();
+      verified = true;
+    } else if (req.user.totpSecret || (req.user.hasVaultPin && req.user.vaultPin)) {
+      verified = Boolean(
+        (req.user.totpSecret && verifyTotpCode(req.user.totpSecret, cleanCode)) ||
+        (req.user.hasVaultPin && req.user.vaultPin && cleanCode === String(req.user.vaultPin))
+      );
+    }
+
+    if (!verified) {
+      return res.status(400).json({ error: 'Invalid verification code or Vault PIN.' });
+    }
+
+    const token = createToken(req.user);
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: config.env === 'production',
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 1000
+    });
+
+    res.json({ ok: true, token, user: sanitizeUserOutput(req.user) });
+  } catch (err) {
+    res.status(500).json({ error: 'Re-authentication failed.' });
+  }
 });
 
 // 10. Security actions

@@ -300,8 +300,56 @@ async function sendExportZipEmail({ to, name, zipBuffer, zipPassword, docCount, 
   return result;
 }
 
+/**
+ * Sends a secure document share link to the recipient's email
+ */
+async function sendShareLinkEmail({ to, senderName, docTitle, shareUrl, expiresAt, maxViews = 5 }) {
+  const recipientName = String(to || '').split('@')[0] || 'Recipient';
+  const expStr = expiresAt ? new Date(expiresAt).toLocaleString() : '24 hours';
+  const htmlContent = `
+  <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0b1120; color: #f8fafc; padding: 36px 20px; border-radius: 12px; max-width: 540px; margin: 0 auto;">
+    <div style="text-align: center; margin-bottom: 20px;">
+      <div style="display: inline-block; background: #0284c7; color: white; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: bold;">
+        TRUSTVAULT SECURE SHARE
+      </div>
+      <h2 style="color: #ffffff; margin: 14px 0 6px 0; font-size: 22px;">${docTitle}</h2>
+      <p style="color: #94a3b8; font-size: 13px; margin: 0;">Shared by ${senderName || 'a TrustVault user'}</p>
+    </div>
+    <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 22px; margin: 20px 0;">
+      <p style="color: #cbd5e1; font-size: 14px; margin: 0 0 14px 0;">Hello <b>${recipientName}</b>,</p>
+      <p style="color: #cbd5e1; font-size: 14px; line-height: 1.5; margin: 0 0 18px 0;">
+        <b>${senderName || 'A student'}</b> has shared a verified document (<b>${docTitle}</b>) with you via TrustVault.
+      </p>
+      <div style="text-align: center; margin: 20px 0;">
+        <a href="${shareUrl}" style="display: inline-block; background: #0284c7; color: #ffffff; text-decoration: none; font-weight: 600; padding: 12px 24px; border-radius: 8px;">
+          Open Shared Document
+        </a>
+      </div>
+      <p style="color: #94a3b8; font-size: 12px; margin: 14px 0 0 0; word-break: break-all;">
+        Or copy link: <a href="${shareUrl}" style="color: #38bdf8;">${shareUrl}</a>
+      </p>
+      <p style="color: #64748b; font-size: 12px; margin: 12px 0 0 0;">
+        Expires: ${expStr} · Max views: ${maxViews}
+      </p>
+    </div>
+  </div>`;
+
+  const result = await sendWithFallback({
+    to,
+    subject: `${senderName || 'TrustVault User'} shared "${docTitle}" with you - TrustVault`,
+    text: `Hello ${recipientName},\n\n${senderName || 'A TrustVault user'} has shared "${docTitle}" with you.\n\nOpen link: ${shareUrl}\nExpires: ${expStr}\nMax views: ${maxViews}\n\nTrustVault Portal`,
+    html: htmlContent
+  });
+
+  if (result.sent) {
+    console.log(`[TrustVault Mailer] Share link emailed to ${to}! Message ID: ${result.messageId}`);
+  }
+  return result;
+}
+
 module.exports = {
   validateEmailAddress,
   sendOtpEmail,
-  sendExportZipEmail
+  sendExportZipEmail,
+  sendShareLinkEmail
 };

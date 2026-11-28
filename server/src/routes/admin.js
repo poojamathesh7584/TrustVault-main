@@ -347,14 +347,19 @@ router.get('/audit', async (req, res) => {
       return res.status(503).json({ error: 'Database unavailable.' });
     }
 
-    const logs = await Audit.find().sort({ at: -1 }).limit(100);
+    const logs = await Audit.find().populate('userId', 'name role').sort({ at: -1 }).limit(100);
     const formatted = logs.map((l) => ({
       id: l._id.toString(),
       _id: l._id.toString(),
       at: l.at,
+      createdAt: l.at,
       action: l.action.toLowerCase().replace(/_/g, '.'),
       detail: l.detail,
-      user: { name: l.userName },
+      user: l.userName || l.userId ? {
+        _id: l.userId?._id?.toString(),
+        name: l.userName || l.userId?.name || 'System',
+        role: l.userId?.role || 'system'
+      } : null,
       ip: l.ip
     }));
     res.json(formatted);
@@ -387,18 +392,31 @@ router.get('/requests', async (req, res) => {
       .populate('facultyId', 'name dept')
       .sort({ requestedAt: -1 });
 
-    const formatted = list.map((item) => ({
-      id: item._id.toString(),
-      _id: item._id.toString(),
-      studentName: item.studentId?.name || 'Student',
-      studentRoll: item.studentId?.roll || '',
-      verifierName: item.facultyId?.name || 'Faculty',
-      verifierDept: item.facultyId?.dept || '',
-      types: item.types,
-      status: item.status,
-      reason: item.reason,
-      requestedAt: item.requestedAt
-    }));
+    const formatted = list.map((item) => {
+      const sName = item.studentId?.name || item.targetEmail || 'Student';
+      const sRoll = item.studentId?.roll || item.targetRoll || '';
+      const fName = item.facultyId?.name || 'Faculty';
+      const fDept = item.facultyId?.dept || '';
+      const granted = Array.isArray(item.granted) && item.granted.length
+        ? item.granted
+        : (item.status === 'approved' || item.status === 'used' ? item.types : []);
+      return {
+        id: item._id.toString(),
+        _id: item._id.toString(),
+        studentName: sName,
+        studentRoll: sRoll,
+        verifierName: fName,
+        verifierDept: fDept,
+        faculty: { name: fName, dept: fDept },
+        student: { name: sName, studentId: sRoll, roll: sRoll },
+        types: item.types,
+        granted,
+        opened: item.status === 'used' ? 1 : 0,
+        status: item.status,
+        reason: item.reason,
+        requestedAt: item.requestedAt
+      };
+    });
 
     res.json(formatted);
   } catch (err) {
@@ -415,7 +433,9 @@ router.get('/ledger', async (req, res) => {
 
     const blocks = await Audit.find().sort({ index: -1 }).limit(20);
     const formatted = blocks.map((b) => ({
+      _id: b._id.toString(),
       index: b.index,
+      at: b.at,
       timestamp: b.at,
       action: b.action,
       hash: b.hash,
@@ -450,7 +470,7 @@ router.post('/integrity', async (req, res) => {
       ok: result.valid,
       blocks: result.count,
       documents: docCount,
-      problems: result.valid ? [] : [{ index: result.brokenIndex, reason: result.reason }],
+      problems: result.valid ? [] : [result.reason || `Integrity mismatch at block #${result.brokenIndex}`],
       message: result.message
     });
   } catch (err) {

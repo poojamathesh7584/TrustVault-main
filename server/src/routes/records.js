@@ -17,6 +17,10 @@ function extractBatch(roll = '', fallback = '26MX') {
   return match ? match[1].toUpperCase() : fallback;
 }
 
+function normalizeReason(reason, fallback) {
+  return String(reason || '').trim().substring(0, 500) || fallback;
+}
+
 // 1. GET /api/records/batches - Dynamic batch counts for all registered students
 router.get('/batches', authMiddleware, requireRole('verifier'), async (req, res) => {
   try {
@@ -290,8 +294,8 @@ router.post('/request-access', authMiddleware, requireRole('verifier'), async (r
       targetEmail: student.email,
       targetRoll: (student.roll || '').toUpperCase(),
       facultyId: req.user._id,
-      types: Array.isArray(types) ? types : ['aadhaar', 'pan'],
-      reason: String(reason).trim().substring(0, 500),
+      types: Array.isArray(types) && types.length ? types : ['aadhaar', 'pan'],
+      reason: normalizeReason(reason, 'Academic verification review'),
       status: 'pending'
     });
 
@@ -324,12 +328,14 @@ router.post('/request-batch', authMiddleware, requireRole('verifier'), async (re
       return res.status(503).json({ error: 'Database unavailable.' });
     }
 
-    const { group, batch, types = ['aadhaar', 'pan'], reason = 'Batch verification drive' } = req.body || {};
+    const { group, batch, types, reason } = req.body || {};
     const targetBatch = (group || batch || '26MX').toUpperCase();
+    const requestedTypes = Array.isArray(types) && types.length > 0 ? types : ['aadhaar', 'pan'];
+    const cleanReason = normalizeReason(reason, `Batch ${targetBatch} verification drive`);
 
     const allStudents = await User.find({ role: 'student' });
     const students = allStudents.filter((s) => {
-      const roll = (s.roll || '').toUpperCase();
+      const roll = (s.roll || s.studentId || '').toUpperCase();
       const b = (/^[0-9]{2}[A-Za-z]{1,4}/i.test(roll)
         ? extractBatch(roll, '26MX')
         : (s.batch || '26MX')).toUpperCase();
@@ -351,10 +357,10 @@ router.post('/request-batch', authMiddleware, requireRole('verifier'), async (re
       await AccessRequest.create({
         studentId: student._id,
         targetEmail: (student.email || '').toLowerCase(),
-        targetRoll: (student.roll || '').toUpperCase(),
+        targetRoll: (student.roll || student.studentId || '').toUpperCase(),
         facultyId: req.user._id,
-        types,
-        reason: String(reason).trim().substring(0, 500),
+        types: requestedTypes,
+        reason: cleanReason,
         status: 'pending'
       });
       sent++;
@@ -362,7 +368,7 @@ router.post('/request-batch', authMiddleware, requireRole('verifier'), async (re
 
     await recordAudit({
       action: 'ACCESS_REQUEST_BATCH',
-      detail: `Faculty ${req.user.name} requested [${types.join(', ')}] for batch ${targetBatch} (${sent} students)`,
+      detail: `Faculty ${req.user.name} requested [${requestedTypes.join(', ')}] for batch ${targetBatch} (${sent} students)`,
       userId: req.user._id,
       userName: req.user.name,
       ip: req.ip
@@ -421,7 +427,7 @@ router.post('/request-by-email', authMiddleware, requireRole('verifier'), async 
       targetRoll: student.roll,
       facultyId: req.user._id,
       types: Array.isArray(types) && types.length ? types : ['aadhaar', 'pan'],
-      reason: String(reason || 'Academic verification review').trim().substring(0, 500),
+      reason: normalizeReason(reason, 'Academic verification review'),
       status: 'pending'
     });
 

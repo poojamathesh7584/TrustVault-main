@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { Toaster as Sonner, toast as sonner } from 'sonner';
 import { AlertCircle, ArrowBigUp, Check, CheckCircle2, ClipboardPaste, Copy, Eye, EyeOff, Loader2, Unlock, X } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, TYPE_LABELS } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import { spring } from '@/lib/fx';

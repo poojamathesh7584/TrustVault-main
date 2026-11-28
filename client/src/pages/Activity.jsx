@@ -24,11 +24,11 @@ export function AuditTable({ logs, showSubject }) {
         {logs.map((a) => {
           const byOther = a.user && !isMe(a.user) && !showSubject;
           return (
-            <TableRow key={a._id} className={byOther ? 'bg-amber-400/12' : undefined}>
-              <TableCell className="whitespace-nowrap">{fmtDate(a.createdAt)}</TableCell>
+            <TableRow key={a._id || a.id} className={byOther ? 'bg-amber-400/12' : undefined}>
+              <TableCell className="whitespace-nowrap">{fmtDate(a.createdAt || a.at)}</TableCell>
               <TableCell className="font-semibold whitespace-nowrap" title={a.action}>{actionLabel(a.action)}</TableCell>
               <TableCell className="min-w-56">{cleanDetail(a.detail)}</TableCell>
-              <TableCell className="whitespace-nowrap">{a.user ? `${a.user.name} (${a.user.role})` : <span className="text-muted-foreground">system / guest</span>}</TableCell>
+              <TableCell className="whitespace-nowrap">{a.user ? `${a.user.name}${a.user.role ? ` (${a.user.role})` : ''}` : <span className="text-muted-foreground">system / guest</span>}</TableCell>
               {showSubject && <TableCell>{a.subject?.name ?? '-'}</TableCell>}
               <TableCell className="font-mono text-xs">{a.ip}</TableCell>
             </TableRow>
@@ -42,21 +42,29 @@ export function AuditTable({ logs, showSubject }) {
 
 // Category of each action -> filter group, icon, colour
 const KIND = (action) => {
-  if (/^login|^session|^devices|^register/.test(action)) return ['signin', LogIn, 'var(--info)'];
-  if (/^document/.test(action)) return ['docs', FileText, 'var(--violet)'];
-  if (/^(record|access|share)/.test(action)) return ['access', Eye, 'var(--primary)'];
+  const act = String(action || '').toLowerCase().replace(/_/g, '.');
+  if (/^(login|session|devices|register|student\.register|logout|reauth|otp)/.test(act)) return ['signin', LogIn, 'var(--info)'];
+  if (/^document/.test(act)) return ['docs', FileText, 'var(--violet)'];
+  if (/^(record|access|share|faculty)/.test(act)) return ['access', Eye, 'var(--primary)'];
   return ['security', ShieldCheck, 'var(--success)'];
 };
 const FILTERS = [['all', 'Everything'], ['signin', 'Sign-ins'], ['docs', 'Documents'], ['access', 'Access & sharing'], ['security', 'Security']];
 const PAGE = 15;
 
+const eventDate = (e) => e?.createdAt || e?.at;
+
 const dayLabel = (d) => {
-  const day = new Date(d).toDateString();
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return 'Recent';
+  const day = dt.toDateString();
   if (day === new Date().toDateString()) return 'Today';
   if (day === new Date(Date.now() - 864e5).toDateString()) return 'Yesterday';
-  return new Date(d).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  return dt.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
 };
-const time = (d) => new Date(d).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+const time = (d) => {
+  const dt = new Date(d);
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+};
 
 // One line per event (or per run of identical events); a run opens to show each one.
 function Row({ a, me, open, onToggle, i }) {
@@ -68,7 +76,8 @@ function Row({ a, me, open, onToggle, i }) {
     (me?.name && a.user.name && a.user.name.toLowerCase() === me.name.toLowerCase())
   );
   const other = a.user && !isMe;
-  const c = a.action === 'login.failed' || a.action === 'document.rejected' ? 'var(--destructive)' : other ? '#fbbf24' : tone;
+  const isFailure = /failed|rejected|locked|denied/i.test(a.action || '');
+  const c = isFailure ? 'var(--destructive)' : other ? '#fbbf24' : tone;
   return (
     <li className={cn('al-row', other && 'other')} style={{ '--c': c, '--i': i }}>
       <div className="al-line">
@@ -79,7 +88,7 @@ function Row({ a, me, open, onToggle, i }) {
           {a.detail && <span className="text-muted-foreground"> · {cleanDetail(a.detail)}</span>}
           {other && <span className="text-muted-foreground"> · by <b className="text-foreground">{a.user.name}</b></span>}
         </span>
-        <time className="shrink-0 font-mono text-xs text-muted-foreground" dateTime={a.createdAt}>{a.count > 1 && time(a.items.at(-1).createdAt) !== time(a.createdAt) ? `${time(a.items.at(-1).createdAt)}–${time(a.createdAt)}` : time(a.createdAt)}</time>
+        <time className="shrink-0 font-mono text-xs text-muted-foreground" dateTime={eventDate(a)}>{a.count > 1 && time(eventDate(a.items.at(-1))) !== time(eventDate(a)) ? `${time(eventDate(a.items.at(-1)))}–${time(eventDate(a))}` : time(eventDate(a))}</time>
         {a.count > 1 && (
           <button type="button" className="al-more" onClick={onToggle} aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} the ${a.count} events`}>
             <ChevronDown className={cn('size-4 transition-transform', open && 'rotate-180')} />
@@ -88,7 +97,7 @@ function Row({ a, me, open, onToggle, i }) {
       </div>
       {open && (
         <ul className="al-sub">
-          {a.items.map((e) => <li key={e._id}><span className="font-mono text-xs text-muted-foreground">{time(e.createdAt)}</span> {cleanDetail(e.detail) || actionLabel(e.action)}{e.ip && <span className="font-mono text-xs text-muted-foreground"> · {e.ip}</span>}</li>)}
+          {a.items.map((e, idx) => <li key={e._id || e.id || idx}><span className="font-mono text-xs text-muted-foreground">{time(eventDate(e))}</span> {cleanDetail(e.detail) || actionLabel(e.action)}{e.ip && <span className="font-mono text-xs text-muted-foreground"> · {e.ip}</span>}</li>)}
         </ul>
       )}
     </li>
@@ -110,7 +119,7 @@ export default function Activity() {
   const pages = Math.max(1, Math.ceil(runs.length / PAGE));
   const slice = runs.slice(page * PAGE, page * PAGE + PAGE);
   const groupedDays = slice.reduce((acc, a) => {
-    const k = dayLabel(a.createdAt);
+    const k = dayLabel(eventDate(a));
     if (!acc[k]) acc[k] = [];
     acc[k].push(a);
     return acc;
@@ -129,7 +138,7 @@ export default function Activity() {
   return (
     <div className="grid gap-8">
       <PageHeader icon={History} kicker="Tamper-evident audit trail" title="Activity Log"
-        stats={[['events recorded', logs.length], ['sign-ins', logs.filter((a) => a.action === 'login').length], ['actions by other people', byOthers, byOthers ? 'warn' : '']]}>
+        stats={[['events recorded', logs.length], ['sign-ins', logs.filter((a) => KIND(a.action)[0] === 'signin').length], ['actions by other people', byOthers, byOthers ? 'warn' : '']]}>
         Everything done with your account - including every time a faculty member opened your documents (highlighted in amber).
       </PageHeader>
       <ErrorText>{error}</ErrorText>
