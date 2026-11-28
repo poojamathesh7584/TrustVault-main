@@ -30,13 +30,19 @@ app.use(helmet({
 // CORS — allow configured clientOrigin as well as localhost / LAN Vite dev origins
 const allowedOrigins = new Set([
   config.clientOrigin || 'http://localhost:5173',
+  process.env.RENDER_EXTERNAL_URL,
   'http://localhost:5173',
   'http://127.0.0.1:5173'
-]);
+].filter(Boolean));
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+    if (
+      !origin ||
+      allowedOrigins.has(origin) ||
+      /^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(origin) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)
+    ) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
